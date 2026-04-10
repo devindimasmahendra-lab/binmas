@@ -6013,17 +6013,7 @@ def admin_emergency_reports():
 
 init_db()
 
-if __name__ == '__main__':
-    # ✅ AUTO RELOAD AKTIF SECARA DEFAULT: Tidak perlu restart server ketika edit file
-    # Setiap ada perubahan kode, server akan reload otomatis, cukup refresh browser saja
-    print("✅ AUTO RELOAD MODE AKTIF - Server akan reload otomatis ketika ada perubahan file")
-    print("🔗 Akses Dashboard BUJP: http://localhost:5004/bujp/dashboard")
-    print("🔑 User default BUJP: anggota1 / anggota123")
 
-    app.run(
-        host='0.0.0.0',
-        port=int(os.environ.get('PORT', 5004)),
-        debug=True,
-        use_reloader=True,
-        reloader_type='stat'
-    )
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
+
