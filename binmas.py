@@ -1,14 +1,27 @@
+# FIX UNICODE ENCODING UNTUK WINDOWS CONSOLE
+import sys
+import os
+if sys.platform == "win32":
+    # Paksa encoding stdout ke UTF-8
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+    # Set environment variable untuk memastikan python pakai UTF-8
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    os.environ['PYTHONLEGACYWINDOWSSTDIO'] = '1'
+
 from flask import Flask, request, session, redirect, url_for, render_template_string, jsonify, g, abort, make_response, send_from_directory
 from flask_sock import Sock
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import sqlite3
-import os
 import json
 import hashlib
 import hmac
 import secrets
 import io
+import re
 from functools import wraps
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import Lock
 import pandas as pd
 
@@ -23,8 +36,21 @@ app.config.update(
     SECRET_KEY=os.environ.get('SECRET_KEY', secrets.token_hex(32)),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
 )
 sock = Sock(app)
+
+# ✅ RATE LIMITER UNTUK ANTI BRUTE FORCE
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["200 per minute"],
+    storage_uri="memory://",
+    strategy="fixed-window",
+)
+
+# ✅ ENDPOINT LOGIN DI LIMIT 5 PER MENIT PER IP (ANTI BRUTE FORCE)
+login_limiter = limiter.shared_limit("5 per minute", scope="login")
 
 # Serve static files
 @app.route('/static/<path:filename>')
@@ -597,16 +623,46 @@ BASE_TEMPLATE = """
       </div>
     </div>
   </div>
+  <style>
+    #app-header {
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      will-change: padding, transform, border-radius;
+    }
+    
+    #app-header.header-shrinked {
+      padding-top: 0.4rem !important;
+      padding-bottom: 0.4rem !important;
+      margin-top: 0.2rem !important;
+      top: 0.2rem !important;
+      border-radius: 1rem !important;
+      backdrop-filter: blur(16px);
+    }
+    
+    #app-header.header-shrinked .app-title {
+      font-size: 0.9rem !important;
+    }
+    
+    #app-header.header-shrinked .app-version {
+      display: none !important;
+    }
+    
+    #app-header.header-shrinked .user-badge {
+      padding-top: 0.25rem !important;
+      padding-bottom: 0.25rem !important;
+      font-size: 0.75rem !important;
+    }
+  </style>
+
   <div class="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
-    <header class="glass rounded-3xl px-4 py-3 sticky top-3 z-30">
+    <header id="app-header" class="glass rounded-3xl px-4 py-3 sticky top-3 z-30">
       <div class="flex flex-col md:flex-row items-start md:items-center gap-3 md:gap-4 justify-between">
         <div>
-          <div class="text-xl font-black tracking-wide">{{ app_name }}</div>
-          <div class="text-xs text-slate-400">Version Number 2.0.0.1.10042026</div>
+          <div class="app-title text-xl font-black tracking-wide">{{ app_name }}</div>
+          <div class="app-version text-xs text-slate-400">Version Number 2.0.0.1.10042026</div>
         </div>
         <div class="flex flex-wrap gap-2 items-center">
           {% if user %}
-            <span class="px-3 py-2 rounded-xl bg-cyan-500/20 border border-cyan-400/20 text-cyan-200 text-sm">{{ user['full_name'] }} • {{ user['role'] }}</span>
+            <span class="user-badge px-3 py-2 rounded-xl bg-cyan-500/20 border border-cyan-400/20 text-cyan-200 text-sm">{{ user['full_name'] }} • {{ user['role'] }}</span>
           {% endif %}
           {{ nav|safe }}
         </div>
@@ -614,7 +670,30 @@ BASE_TEMPLATE = """
     </header>
     <main class="py-4">{{ body|safe }}</main>
   </div>
+  
   <script>
+    // Dynamic Header Shrink on Scroll
+    const header = document.getElementById('app-header');
+    let lastScrollY = window.scrollY;
+    let ticking = false;
+    
+    function updateHeader() {
+      if (window.scrollY > 25) {
+        header.classList.add('header-shrinked');
+      } else {
+        header.classList.remove('header-shrinked');
+      }
+      ticking = false;
+    }
+    
+    window.addEventListener('scroll', () => {
+      if (!ticking) {
+        window.requestAnimationFrame(updateHeader);
+        ticking = true;
+      }
+    });
+    
+    // Service Worker
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('{{ url_for('sw') }}').catch(() => {}));
     }
@@ -656,7 +735,12 @@ def point_in_polygon(lat, lng, polygon):
     for i in range(len(pts)):
         yi, xi = pts[i]
         yj, xj = pts[j]
-        intersects = ((xi > lng) != (xj > lng)) and (lat < (yj - yi) * (lng - xi) / ((xj - xi) or 1e-12) + yi)
+        denominator = xj - xi
+        if abs(denominator) < 1e-12:
+            # Vertikal line, skip perhitungan pembagian
+            j = i
+            continue
+        intersects = ((xi > lng) != (xj > lng)) and (lat < (yj - yi) * (lng - xi) / denominator + yi)
         if intersects:
             inside = not inside
         j = i
@@ -6013,7 +6097,17 @@ def admin_emergency_reports():
 
 init_db()
 
+if __name__ == '__main__':
+    # ✅ AUTO RELOAD AKTIF SECARA DEFAULT: Tidak perlu restart server ketika edit file
+    # Setiap ada perubahan kode, server akan reload otomatis, cukup refresh browser saja
+    print("✅ AUTO RELOAD MODE AKTIF - Server akan reload otomatis ketika ada perubahan file")
+    print("🔗 Akses Dashboard BUJP: http://localhost:5004/bujp/dashboard")
+    print("🔑 User default BUJP: anggota1 / anggota123")
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
-
+    app.run(
+        host='0.0.0.0',
+        port=int(os.environ.get('PORT', 5004)),
+        debug=True,
+        use_reloader=True,
+        reloader_type='stat'
+    )
