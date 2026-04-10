@@ -3,3 +3,4 @@ flask-sock
 gunicorn
 gevent
 pandas
+flask-limiter
