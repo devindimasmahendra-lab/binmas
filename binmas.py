@@ -40,17 +40,71 @@ app.config.update(
 )
 sock = Sock(app)
 
-# ✅ RATE LIMITER UNTUK ANTI BRUTE FORCE
+# ✅ RATE LIMITER OPTIMASI UNTUK 200 USER BERSAMAAN + ANTI BRUTE FORCE
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=["200 per minute"],
+    default_limits=["800 per minute"],
     storage_uri="memory://",
     strategy="fixed-window",
+    headers_enabled=True,
+    on_breach=lambda e: (jsonify({"error": "Terlalu banyak permintaan, tunggu sebentar", "retry_after": e.description}), 429)
 )
 
-# ✅ ENDPOINT LOGIN DI LIMIT 5 PER MENIT PER IP (ANTI BRUTE FORCE)
-login_limiter = limiter.shared_limit("5 per minute", scope="login")
+# ✅ LOGIN LIMIT SMART: 12 PERCOBAAN PER 5 MENIT PER IP
+# Cukup untuk 200 user dari jaringan kantor yang NAT IP nya sama
+login_limiter = limiter.shared_limit("12 per 5 minute", scope="login")
+
+# ✅ PENYIMPANAN LOG GAGAL LOGIN UNTUK DETEKSI BRUTE FORCE
+LOGIN_FAILURES = {}
+FAILURE_BLOCK_THRESHOLD = 12
+BLOCK_DURATION_MINUTES = 45
+
+def check_brute_force(ip_address):
+    """
+    ✅ CEK APAKAH IP INI TERBLOKIR KARENA BRUTE FORCE
+    Mengembalikan True jika boleh lanjut, False jika diblokir
+    """
+    now = datetime.now()
+    
+    # Jika IP tidak ada di daftar failure, lanjutkan
+    if ip_address not in LOGIN_FAILURES:
+        return True
+        
+    data = LOGIN_FAILURES[ip_address]
+    count = data.get('count', 0)
+    last_failure = data.get('last_failure')
+    
+    # Jika sudah di atas ambang batas
+    if count >= FAILURE_BLOCK_THRESHOLD:
+        # Cek apakah waktu blokir sudah lewat
+        elapsed = now - last_failure
+        if elapsed < timedelta(minutes=BLOCK_DURATION_MINUTES):
+            return False
+        else:
+            # Reset counter jika sudah lewat waktu blokir
+            LOGIN_FAILURES.pop(ip_address, None)
+            return True
+    
+    return True
+
+def record_login_failure(ip_address):
+    """ ✅ CATAT KEGAGALAN LOGIN """
+    now = datetime.now()
+    if ip_address not in LOGIN_FAILURES:
+        LOGIN_FAILURES[ip_address] = {
+            'count': 0,
+            'last_failure': now
+        }
+    
+    LOGIN_FAILURES[ip_address]['count'] += 1
+    LOGIN_FAILURES[ip_address]['last_failure'] = now
+    
+    return LOGIN_FAILURES[ip_address]['count']
+
+def reset_login_failures(ip_address):
+    """ ✅ RESET COUNTER KETIKA LOGIN BERHASIL """
+    LOGIN_FAILURES.pop(ip_address, None)
 
 # Serve static files
 @app.route('/static/<path:filename>')
@@ -870,21 +924,31 @@ def login_satpam():
 
     error = ""
     if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
-        password = request.form.get("password") or ""
-        user = get_db().execute("SELECT * FROM users WHERE username=? AND role='satpam'", (username,)).fetchone()
-        if not user or not user["is_active"]:
-            error = "❌ Username Satpam tidak ditemukan / nonaktif."
-        elif not verify_password(password, user["password_hash"]):
-            error = "❌ Password salah."
-            log_action("LOGIN_FAILED", "user", user["id"], f"username={username} satpam")
+        # ✅ CEK BRUTE FORCE SEBELUM APA PUN
+        client_ip = request.remote_addr
+        if not check_brute_force(client_ip):
+            error = f"❌ IP Anda terblokir sementara karena terlalu banyak percobaan login gagal. Silakan coba lagi dalam {BLOCK_DURATION_MINUTES} menit."
         else:
-            session.clear()
-            session["user_id"] = user["id"]
-            session["role"] = user["role"]
-            session["username"] = user["username"]
-            log_action("LOGIN_SUCCESS", "user", user["id"], f"role={user['role']} satpam")
-            return redirect_by_role(user["role"])
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            user = get_db().execute("SELECT * FROM users WHERE username=? AND role='satpam'", (username,)).fetchone()
+            if not user or not user["is_active"]:
+                error = "❌ Username Satpam tidak ditemukan / nonaktif."
+            elif not verify_password(password, user["password_hash"]):
+                error = "❌ Password salah."
+                failures = record_login_failure(client_ip)
+                log_action("LOGIN_FAILED", "user", user["id"], f"username={username} satpam failures={failures}")
+                if failures >= FAILURE_BLOCK_THRESHOLD:
+                    error = f"❌ Terlalu banyak percobaan gagal. IP Anda terblokir selama {BLOCK_DURATION_MINUTES} menit."
+            else:
+                # ✅ LOGIN BERHASIL - RESET COUNTER FAILURE
+                reset_login_failures(client_ip)
+                session.clear()
+                session["user_id"] = user["id"]
+                session["role"] = user["role"]
+                session["username"] = user["username"]
+                log_action("LOGIN_SUCCESS", "user", user["id"], f"role={user['role']} satpam")
+                return redirect_by_role(user["role"])
 
     body = render_template_string("""
     <style>
