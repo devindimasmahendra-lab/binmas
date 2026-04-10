@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-gunicorn binmas:app --worker-class gevent --worke
+gunicorn binmas:app --worker-class gevent --workers 1
