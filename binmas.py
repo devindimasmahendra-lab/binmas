@@ -1509,9 +1509,7 @@ def index():
                 Pusat Komando Pembinaan Masyarakat Sistem terintegrasi monitoring satpam real-time, pendataan, dan manajemen kegiatan pembinaan keamanan.
               </p>
               <div class="flex flex-wrap gap-4 justify-center">
-                <a href="{{ url_for('login') }}" class="px-8 py-4 rounded-2xl bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-bold text-lg hover:from-cyan-500 hover:to-blue-500 transition shadow-lg shadow-cyan-500/25">
-                  🔐 Masuk Akun
-                </a>
+              
                 <a href="#preview" class="px-8 py-4 rounded-2xl bg-white/5 border border-white/10 font-bold text-lg hover:bg-white/10 transition">
                   🗺️ Lihat Preview Maps
                 </a>
