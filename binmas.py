@@ -1743,10 +1743,6 @@ def logout():
     return redirect(url_for("login"))
 
 
-@app.route("/", methods=['GET', 'POST'])
-@login_required
-def home():
-    return redirect_by_role(current_user()["role"])
 
 
 @app.route("/change-password", methods=["GET", "POST"])
