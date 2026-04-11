@@ -112,6 +112,13 @@ def serve_static(filename):
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     return send_from_directory(static_dir, filename)
 
+# 📁 Serve static file uploads emergency
+@app.route('/uploads/emergency/<path:filename>')
+def serve_emergency_uploads(filename):
+    upload_dir = os.path.join(os.path.dirname(__file__), "uploads", "emergency")
+    os.makedirs(upload_dir, exist_ok=True)
+    return send_from_directory(upload_dir, filename)
+
 WS_LOCK = Lock()
 MONITOR_SOCKETS = set()
 SATPAM_SOCKETS = {}  # user_id -> set(websocket)
@@ -1420,6 +1427,205 @@ def login_anggota():
     </script>
     """, error=error)
     return render_page("Login Anggota", body)
+
+
+# ✅ HALAMAN PENGENALAN / LANDING PAGE UTAMA BINMAS COMMAND CENTER
+@app.route("/")
+def index():
+    if session.get("user_id") and current_user():
+        return redirect_by_role(current_user()["role"])
+    
+    body = render_template_string("""
+    <style>
+    @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+    .animate-fadeInUp { animation: fadeInUp 0.7s ease-out forwards; }
+    .animate-delay-100 { animation-delay: 0.1s; opacity: 0; }
+    .animate-delay-200 { animation-delay: 0.2s; opacity: 0; }
+    .animate-delay-300 { animation-delay: 0.3s; opacity: 0; }
+    .animate-delay-400 { animation-delay: 0.4s; opacity: 0; }
+    .animate-delay-500 { animation-delay: 0.5s; opacity: 0; }
+    .animate-float { animation: float 6s ease-in-out infinite; }
+    
+    .hero-gradient {
+        background: radial-gradient(circle at top, rgba(6,182,212,.12), transparent 50%),
+                    radial-gradient(circle at bottom right, rgba(59,130,246,.12), transparent 50%),
+                    linear-gradient(180deg, #060b16, #0b1220 40%, #0f172a 100%);
+    }
+    
+    .feature-card {
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .feature-card:hover {
+        transform: translateY(-4px);
+        border-color: rgba(6,182,212,0.3);
+        background: rgba(6,182,212,0.08);
+    }
+    </style>
+    
+    <div class="hero-gradient min-h-[92vh] -mx-4 -mt-4 -mb-4 px-4 pt-16 pb-20">
+        
+        <!-- ✅ HEADER UTAMA -->
+        <div class="max-w-5xl mx-auto text-center mb-16 animate-fadeInUp">
+            <div class="w-24 h-24 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-5xl shadow-xl shadow-cyan-500/20 animate-float">
+                🛡️
+            </div>
+            
+            <h1 class="text-4xl md:text-5xl font-black mb-3 tracking-tight">
+                <span class="text-cyan-400">BINMAS</span> Command Center
+            </h1>
+            
+            <p class="text-xl md:text-2xl font-semibold text-slate-300 mb-4">
+                Pusat Komando Pembinaan Masyarakat
+            </p>
+            
+            <p class="text-slate-400 max-w-2xl mx-auto mb-8">
+                Sistem terintegrasi untuk mendukung tugas dan fungsi BINMAS POLRI dalam monitoring, pendataan, 
+                dan manajemen kegiatan pembinaan keamanan dan ketertiban masyarakat.
+            </p>
+            
+            <div class="flex flex-wrap gap-4 justify-center animate-fadeInUp animate-delay-200">
+                <a href="{{ url_for('login') }}" class="px-8 py-4 rounded-2xl bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-bold text-lg hover:from-cyan-500 hover:to-blue-500 transition shadow-lg shadow-cyan-500/25">
+                    🔐 Masuk Sistem
+                </a>
+                <a href="#fitur" class="px-8 py-4 rounded-2xl bg-white/5 border border-white/10 font-bold text-lg hover:bg-white/10 transition">
+                    ℹ️ Tentang Sistem
+                </a>
+            </div>
+        </div>
+        
+        <!-- ✅ GAMBARAN SISTEM -->
+        <div class="max-w-5xl mx-auto mb-20 animate-fadeInUp animate-delay-300">
+            <h2 class="text-2xl font-bold mb-8 text-center text-slate-200">Gambaran Sistem</h2>
+            
+            <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="glass rounded-2xl p-5 text-center">
+                    <div class="text-3xl mb-3">📊</div>
+                    <div class="font-bold mb-1">Monitoring Kegiatan</div>
+                    <div class="text-sm text-slate-400">Pemantauan real-time seluruh kegiatan Binmas</div>
+                </div>
+                
+                <div class="glass rounded-2xl p-5 text-center">
+                    <div class="text-3xl mb-3">📝</div>
+                    <div class="font-bold mb-1">Pendataan & Pelaporan</div>
+                    <div class="text-sm text-slate-400">Sistem pencatatan dan laporan terstandarisasi</div>
+                </div>
+                
+                <div class="glass rounded-2xl p-5 text-center">
+                    <div class="text-3xl mb-3">📈</div>
+                    <div class="font-bold mb-1">Analisa & Evaluasi</div>
+                    <div class="text-sm text-slate-400">Analisis data untuk peningkatan kinerja</div>
+                </div>
+                
+                <div class="glass rounded-2xl p-5 text-center">
+                    <div class="text-3xl mb-3">🎯</div>
+                    <div class="font-bold mb-1">Pengambilan Keputusan</div>
+                    <div class="text-sm text-slate-400">Data akurat mendukung keputusan pimpinan</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- ✅ FITUR UTAMA -->
+        <div id="fitur" class="max-w-5xl mx-auto mb-20 animate-fadeInUp animate-delay-400">
+            <h2 class="text-2xl font-bold mb-8 text-center text-slate-200">Fitur Utama Sistem</h2>
+            
+            <div class="grid md:grid-cols-2 gap-5">
+                <div class="feature-card glass rounded-2xl p-6">
+                    <div class="flex items-start gap-4">
+                        <div class="w-12 h-12 rounded-xl bg-cyan-500/20 flex items-center justify-center text-2xl flex-shrink-0">🖥️</div>
+                        <div>
+                            <h3 class="font-bold text-lg mb-1">Dashboard Monitoring</h3>
+                            <p class="text-slate-400 text-sm">Papan kontrol utama dengan visualisasi data dan ringkasan informasi penting secara real-time.</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="feature-card glass rounded-2xl p-6">
+                    <div class="flex items-start gap-4">
+                        <div class="w-12 h-12 rounded-xl bg-emerald-500/20 flex items-center justify-center text-2xl flex-shrink-0">📋</div>
+                        <div>
+                            <h3 class="font-bold text-lg mb-1">Laporan Kegiatan & Rekap</h3>
+                            <p class="text-slate-400 text-sm">Sistem pelaporan kegiatan otomatis dengan kemampuan rekapitulasi data periodik.</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="feature-card glass rounded-2xl p-6">
+                    <div class="flex items-start gap-4">
+                        <div class="w-12 h-12 rounded-xl bg-amber-500/20 flex items-center justify-center text-2xl flex-shrink-0">🗺️</div>
+                        <div>
+                            <h3 class="font-bold text-lg mb-1">Data Wilayah & Pembinaan</h3>
+                            <p class="text-slate-400 text-sm">Manajemen data wilayah dan database pembinaan masyarakat terstruktur.</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="feature-card glass rounded-2xl p-6">
+                    <div class="flex items-start gap-4">
+                        <div class="w-12 h-12 rounded-xl bg-purple-500/20 flex items-center justify-center text-2xl flex-shrink-0">📑</div>
+                        <div>
+                            <h3 class="font-bold text-lg mb-1">Dokumentasi & Evaluasi</h3>
+                            <p class="text-slate-400 text-sm">Arsip dokumen digital dan sistem evaluasi kinerja berbasis data.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- ✅ MANFAAT -->
+        <div class="max-w-5xl mx-auto mb-20 animate-fadeInUp animate-delay-500">
+            <h2 class="text-2xl font-bold mb-8 text-center text-slate-200">Manfaat Sistem</h2>
+            
+            <div class="glass rounded-3xl p-8">
+                <div class="grid md:grid-cols-2 gap-6">
+                    <div class="flex items-start gap-3">
+                        <div class="text-emerald-400 mt-1">✅</div>
+                        <div>
+                            <div class="font-semibold">Memudahkan pekerjaan petugas</div>
+                            <div class="text-sm text-slate-400">Proses administrasi menjadi lebih cepat dan efisien</div>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-start gap-3">
+                        <div class="text-emerald-400 mt-1">✅</div>
+                        <div>
+                            <div class="font-semibold">Data lebih tertib & terstruktur</div>
+                            <div class="text-sm text-slate-400">Semua data tersimpan rapi dalam database terpusat</div>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-start gap-3">
+                        <div class="text-emerald-400 mt-1">✅</div>
+                        <div>
+                            <div class="font-semibold">Mendukung transparansi & akuntabilitas</div>
+                            <div class="text-sm text-slate-400">Setiap aktivitas tercatat dengan jejak audit yang jelas</div>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-start gap-3">
+                        <div class="text-emerald-400 mt-1">✅</div>
+                        <div>
+                            <div class="font-semibold">Siap untuk evaluasi pimpinan</div>
+                            <div class="text-sm text-slate-400">Laporan dan informasi tersedia kapan saja dibutuhkan</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- ✅ FOOTER -->
+        <footer class="max-w-5xl mx-auto text-center text-slate-500 text-sm animate-fadeInUp animate-delay-500">
+            <div class="border-t border-white/5 pt-8 pb-4">
+                <div class="font-bold mb-1">© 2026 BINMAS • KEPOLISIAN NEGARA REPUBLIK INDONESIA</div>
+                <div>Sistem Informasi Pembinaan Masyarakat - Versi 2.0.0</div>
+                <div class="mt-2 text-xs text-slate-600">Dikembangkan untuk mendukung tugas pokok dan fungsi Polri</div>
+            </div>
+        </footer>
+    
+    </div>
+    """)
+    
+    return render_page("Beranda", body, user=None)
 
 
 # HALAMAN UTAMA LOGIN DENGAN PILIHAN ROLE
@@ -5706,12 +5912,6 @@ def bujp_export_absensi():
 # 🚨 FITUR EMERGENCY BUTTON DARURAT
 # ==============================
 
-# 📁 Serve static file uploads emergency
-@app.route('/uploads/emergency/<path:filename>')
-def serve_emergency_uploads(filename):
-    upload_dir = os.path.join(os.path.dirname(__file__), "uploads", "emergency")
-    return send_from_directory(upload_dir, filename)
-
 @app.route("/api/emergency/process/<int:report_id>", methods=["POST"])
 @login_required
 @roles_required("admin", "direktur_binmas")
@@ -6165,12 +6365,13 @@ if __name__ == '__main__':
     # ✅ AUTO RELOAD AKTIF SECARA DEFAULT: Tidak perlu restart server ketika edit file
     # Setiap ada perubahan kode, server akan reload otomatis, cukup refresh browser saja
     print("✅ AUTO RELOAD MODE AKTIF - Server akan reload otomatis ketika ada perubahan file")
-    print("🔗 Akses Dashboard BUJP: http://localhost:5004/bujp/dashboard")
+    print("🔗 Akses Halaman Utama: http://localhost:5010")
+    print("🔗 Akses Dashboard BUJP: http://localhost:5010/bujp/dashboard")
     print("🔑 User default BUJP: anggota1 / anggota123")
 
     app.run(
         host='0.0.0.0',
-        port=int(os.environ.get('PORT', 5004)),
+        port=int(os.environ.get('PORT', 5010)),
         debug=True,
         use_reloader=True,
         reloader_type='stat'
