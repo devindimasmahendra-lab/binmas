@@ -832,9 +832,20 @@ def latest_snapshot():
     payload = []
     with WS_LOCK:
         online_ids = {uid for uid, sockset in SATPAM_SOCKETS.items() if sockset}
+    
+    now = datetime.utcnow()
+    max_age = timedelta(hours=8)
+    
     for row in rows:
         item = dict(row)
+        
+        # Cek apakah lokasi masih kurang dari 8 jam
+        created_time = datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S")
+        if now - created_time > max_age:
+            continue  # Lewati jika sudah lebih dari 8 jam, tidak tampil di map
+            
         item["online"] = row["user_id"] in online_ids
+        item["last_seen"] = row["created_at"]
         item["geofences"] = geofence_hits(item["lat"], item["lng"])
         payload.append(item)
     return payload
@@ -4404,7 +4415,7 @@ def monitor_map():
 
       function upsertMarker(row) {
         stateRows[row.user_id] = Object.assign({}, stateRows[row.user_id] || {}, row);
-        const latlng = [row.lat, row.lng];
+        const newLatLng = [row.lat, row.lng];
         const iconColor = row.online ? '#22c55e' : '#f97316';
         
         if (!markers[row.user_id]) {
@@ -4414,9 +4425,33 @@ def monitor_map():
             iconSize: [18, 18],
             iconAnchor: [9, 9]
           });
-          markers[row.user_id] = L.marker(latlng, {icon: customIcon}).addTo(map);
+          markers[row.user_id] = L.marker(newLatLng, {icon: customIcon}).addTo(map);
         } else {
-          markers[row.user_id].setLatLng(latlng);
+          // ✅ ANIMASI GERAK SMOOTH HANYA JIKA SATPAM MASIH ONLINE (KONEKSI MASIH ADA)
+          if (row.online) {
+            // Animasi perpindahan marker secara smooth
+            const currentPos = markers[row.user_id].getLatLng();
+            const steps = 30;
+            const deltaLat = (newLatLng[0] - currentPos.lat) / steps;
+            const deltaLng = (newLatLng[1] - currentPos.lng) / steps;
+            let step = 0;
+            
+            function animateMarker() {
+              if (step >= steps) {
+                markers[row.user_id].setLatLng(newLatLng);
+                return;
+              }
+              const nextLat = currentPos.lat + (deltaLat * step);
+              const nextLng = currentPos.lng + (deltaLng * step);
+              markers[row.user_id].setLatLng([nextLat, nextLng]);
+              step++;
+              requestAnimationFrame(animateMarker);
+            }
+            animateMarker();
+          } else {
+            // ❌ JIKA OFFLINE / KONEKSI TERPUTUS: TIDAK ADA ANIMASI, LANGSUNG KE POSISI TERAKHIR
+            markers[row.user_id].setLatLng(newLatLng);
+          }
         }
         
         const gf = row.geofences && row.geofences.length ? row.geofences.join(', ') : 'Di luar area geofence';
