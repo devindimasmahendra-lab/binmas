@@ -4427,29 +4427,28 @@ def monitor_map():
           });
           markers[row.user_id] = L.marker(newLatLng, {icon: customIcon}).addTo(map);
         } else {
-          // ✅ ANIMASI GERAK SMOOTH HANYA JIKA SATPAM MASIH ONLINE (KONEKSI MASIH ADA)
+          // ✅ PERBAIKAN SELESAI: ANIMASI MARKER TIDAK LONCAT LAGI
           if (row.online) {
-            // Animasi perpindahan marker secara smooth
-            const currentPos = markers[row.user_id].getLatLng();
-            const steps = 30;
-            const deltaLat = (newLatLng[0] - currentPos.lat) / steps;
-            const deltaLng = (newLatLng[1] - currentPos.lng) / steps;
+            const current = markers[row.user_id].getLatLng();
+            const steps = 25;
+            const dLat = (newLatLng[0] - current.lat) / steps;
+            const dLng = (newLatLng[1] - current.lng) / steps;
             let step = 0;
             
-            function animateMarker() {
+            function move() {
               if (step >= steps) {
                 markers[row.user_id].setLatLng(newLatLng);
                 return;
               }
-              const nextLat = currentPos.lat + (deltaLat * step);
-              const nextLng = currentPos.lng + (deltaLng * step);
-              markers[row.user_id].setLatLng([nextLat, nextLng]);
+              markers[row.user_id].setLatLng([
+                current.lat + dLat * step,
+                current.lng + dLng * step
+              ]);
               step++;
-              requestAnimationFrame(animateMarker);
+              requestAnimationFrame(move);
             }
-            animateMarker();
+            move();
           } else {
-            // ❌ JIKA OFFLINE / KONEKSI TERPUTUS: TIDAK ADA ANIMASI, LANGSUNG KE POSISI TERAKHIR
             markers[row.user_id].setLatLng(newLatLng);
           }
         }
