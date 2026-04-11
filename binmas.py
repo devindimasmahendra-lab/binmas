@@ -1432,9 +1432,11 @@ def login_anggota():
 # ✅ HALAMAN PENGENALAN / LANDING PAGE UTAMA BINMAS COMMAND CENTER
 @app.route("/")
 def index():
+    # JIKA SUDAH LOGIN MAKA REDIRECT KE DASHBOARD SESUAI ROLE
     if session.get("user_id") and current_user():
         return redirect_by_role(current_user()["role"])
     
+    # JIKA BELUM LOGIN TAMPILKAN HALAMAN UTAMA LANDING PAGE (BUKAN LANGSUNG KE LOGIN)
     body = render_template_string("""
     <style>
     @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
@@ -1491,6 +1493,23 @@ def index():
                 <a href="#fitur" class="px-8 py-4 rounded-2xl bg-white/5 border border-white/10 font-bold text-lg hover:bg-white/10 transition">
                     ℹ️ Tentang Sistem
                 </a>
+            </div>
+            
+            <!-- ✅ TOMBOL BINMAS COMMAND CENTER -->
+            <div class="mt-12 animate-fadeInUp animate-delay-300">
+                <div class="glass rounded-3xl p-8 max-w-4xl mx-auto border-2 border-cyan-500/20">
+                    <h3 class="text-2xl font-black text-cyan-400 mb-3 text-center">🏛️ BINMAS Command Center</h3>
+                    <p class="text-lg text-slate-300 text-center mb-6">Pusat Komando Pembinaan Masyarakat</p>
+                    <p class="text-sm text-slate-400 text-center mb-6 max-w-2xl mx-auto">
+                        Sistem terintegrasi untuk mendukung tugas dan fungsi BINMAS POLRI dalam monitoring, pendataan, 
+                        dan manajemen kegiatan pembinaan keamanan dan ketertiban masyarakat.
+                    </p>
+                    <div class="flex flex-wrap gap-4 justify-center">
+                        <a href="{{ url_for('login_direktur') }}" class="px-8 py-4 rounded-2xl bg-gradient-to-r from-violet-600 to-purple-600 text-white font-bold text-lg hover:from-violet-500 hover:to-purple-500 transition shadow-lg shadow-violet-500/25">
+                            👨‍💼 BUKA COMMAND CENTER
+                        </a>
+                    </div>
+                </div>
             </div>
         </div>
         
@@ -1648,6 +1667,13 @@ def login():
       <div class="w-full max-w-3xl animate-fadeInUp">
         
         <div class="text-center mb-12 animate-fadeInUp animate-delay-100">
+          <!-- ✅ TOMBOL KEMBALI KE HALAMAN UTAMA -->
+          <div class="mb-8">
+            <a href="{{ url_for('index') }}" class="inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
+              ⬅️ Kembali ke Halaman Utama
+            </a>
+          </div>
+          
           <div class="w-28 h-28 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-6xl shadow-lg shadow-cyan-500/30">
             🏛️
           </div>
@@ -6366,8 +6392,6 @@ if __name__ == '__main__':
     # Setiap ada perubahan kode, server akan reload otomatis, cukup refresh browser saja
     print("✅ AUTO RELOAD MODE AKTIF - Server akan reload otomatis ketika ada perubahan file")
     print("🔗 Akses Halaman Utama: http://localhost:5010")
-    print("🔗 Akses Dashboard BUJP: http://localhost:5010/bujp/dashboard")
-    print("🔑 User default BUJP: anggota1 / anggota123")
 
     app.run(
         host='0.0.0.0',
