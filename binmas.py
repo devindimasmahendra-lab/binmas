@@ -909,15 +909,21 @@ def manifest():
 @app.route("/sw.js")
 def sw():
     js = """
-    const CACHE = 'guard-tracker-ws-v1';
+    // SERVICE WORKER DINONAKTIFKAN UNTUK DEVELOPMENT
     self.addEventListener('install', e => {
-      e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/'])));
       self.skipWaiting();
     });
-    self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+    self.addEventListener('activate', e => {
+      // HAPUS SEMUA CACHE YANG ADA
+      e.waitUntil(
+        caches.keys().then(names => {
+          return Promise.all(names.map(name => caches.delete(name))
+        ))
+      ).then(() => self.clients.claim())
+    });
+    // JANGAN CACHE APAPUN
     self.addEventListener('fetch', e => {
-      if (e.request.method !== 'GET') return;
-      e.respondWith(caches.match(e.request).then(r => r || fetch(e.request).catch(() => caches.match('/'))));
+      return;
     });
     """
     return app.response_class(js, mimetype="application/javascript")
@@ -1432,8 +1438,212 @@ def login_anggota():
 # ✅ HALAMAN PENGENALAN / LANDING PAGE UTAMA BINMAS COMMAND CENTER
 @app.route("/")
 def index():
-    # ✅ SEKARANG LANGSUNG REDIRECT KE HALAMAN LOGIN UNTUK MENGATASI ERROR DI RENDER.COM
-    return redirect(url_for("login"))
+    # ✅ HALAMAN UTAMA TAMU SEBELUM LOGIN DENGAN DESAIN CANTIK DAN SAMPLE MAPS
+    body = render_template_string("""
+    <!doctype html>
+    <html lang="id" class="dark">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+      <title>BINMAS Command Center</title>
+      <meta name="theme-color" content="#0b1220">
+      <meta name="apple-mobile-web-app-capable" content="yes">
+      <meta name="mobile-web-app-capable" content="yes">
+      <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+      <script src="https://cdn.tailwindcss.com"></script>
+      <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+      <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+      <style>
+        :root { color-scheme: dark; }
+        body {
+          background: radial-gradient(circle at top left, rgba(6,182,212,.15), transparent 25%),
+                      radial-gradient(circle at bottom right, rgba(168,85,247,.15), transparent 25%),
+                      linear-gradient(180deg, #060b16, #0b1220 35%, #0f172a 100%);
+          min-height: 100vh;
+        }
+        .glass {
+          background: rgba(255,255,255,.06);
+          backdrop-filter: blur(14px);
+          -webkit-backdrop-filter: blur(14px);
+          border: 1px solid rgba(255,255,255,.10);
+          box-shadow: 0 10px 30px rgba(0,0,0,.25);
+        }
+        @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+        .animate-float { animation: float 6s ease-in-out infinite; }
+        @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 20px rgba(34,211,238, 0.3); } 50% { box-shadow: 0 0 40px rgba(34,211,238, 0.5); } }
+        .hero-glow:hover { animation: pulse-glow 2s infinite; }
+        .leaflet-container { background: #111827; }
+      </style>
+    </head>
+    <body class="text-slate-100">
+      
+      <!-- ✅ HERO SECTION -->
+      <section class="min-h-[90vh] flex flex-col">
+        <header class="px-4 py-4 sm:px-6">
+          <div class="max-w-7xl mx-auto flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-2xl animate-float">
+                🛡️
+              </div>
+              <div>
+                <div class="font-black text-xl">BINMAS</div>
+                <div class="text-xs text-slate-400">Command Center</div>
+              </div>
+            </div>
+            <a href="{{ url_for('login') }}" class="px-6 py-3 rounded-2xl bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-bold hover:from-cyan-500 hover:to-blue-500 transition shadow-lg shadow-cyan-500/25">
+              🔐 Masuk Sistem
+            </a>
+          </div>
+        </header>
+
+        <main class="flex-1 px-4 sm:px-6 py-8">
+          <div class="max-w-7xl mx-auto">
+            <div class="text-center mb-12">
+              <div class="inline-block px-4 py-2 rounded-full bg-cyan-500/10 border border-cyan-400/20 text-cyan-200 text-sm font-bold mb-6">
+                <span>🛰️</span><span> SISTEM MONITORING REAL-TIME</span>
+              </div>
+              <h1 class="text-4xl md:text-6xl font-black mb-4 tracking-tight">
+                <span class="bg-gradient-to-r from-cyan-300 via-sky-400 to-violet-400 bg-clip-text text-transparent">BINMAS Command Center</span>
+              </h1>
+              <p class="text-lg md:text-xl text-slate-300 max-w-2xl mx-auto mb-8">
+                Pusat Komando Pembinaan Masyarakat Sistem terintegrasi monitoring satpam real-time, pendataan, dan manajemen kegiatan pembinaan keamanan.
+              </p>
+              <div class="flex flex-wrap gap-4 justify-center">
+                <a href="{{ url_for('login') }}" class="px-8 py-4 rounded-2xl bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-bold text-lg hover:from-cyan-500 hover:to-blue-500 transition shadow-lg shadow-cyan-500/25">
+                  🔐 Masuk Akun
+                </a>
+                <a href="#preview" class="px-8 py-4 rounded-2xl bg-white/5 border border-white/10 font-bold text-lg hover:bg-white/10 transition">
+                  🗺️ Lihat Preview Maps
+                </a>
+              </div>
+            </div>
+
+            <!-- ✅ SAMPLE LIVE MAPS PREVIEW -->
+            <div id="preview" class="glass rounded-[2rem] overflow-hidden mb-12 hero-glow transition-all duration-500">
+              <div class="p-4 border-b border-white/10 flex items-center justify-between">
+                <div>
+                  <div class="font-bold text-lg">🗺️ PREVIEW MONITORING SATPAM</div>
+                  <div class="text-xs text-slate-400">Contoh tampilan monitoring lokasi satpam secara real-time</div>
+                </div>
+                <span class="px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-200 text-sm font-bold">✅ LIVE DEMO</span>
+              </div>
+              <div id="previewMap" class="h-[50vh] w-full"></div>
+            </div>
+
+            <!-- ✅ FITUR UTAMA -->
+            <div class="grid md:grid-cols-3 gap-6 mb-12">
+              <div class="glass rounded-3xl p-6 hover:bg-cyan-500/10 hover:border-cyan-500/20 transition">
+                <div class="text-4xl mb-4">📊</div>
+                <div class="font-bold text-xl mb-2">Dashboard Monitoring</div>
+                <div class="text-sm text-slate-400">Papan kontrol utama dengan visualisasi data dan ringkasan informasi penting secara real-time.</div>
+              </div>
+              <div class="glass rounded-3xl p-6 hover:bg-violet-500/10 hover:border-violet-500/20 transition">
+                <div class="text-4xl mb-4">📍</div>
+                <div class="font-bold text-xl mb-2">Lokasi Real-Time</div>
+                <div class="text-sm text-slate-400">Pemantauan lokasi satpam secara live dengan update setiap detik menggunakan WebSocket.</div>
+              </div>
+              <div class="glass rounded-3xl p-6 hover:bg-emerald-500/10 hover:border-emerald-500/20 transition">
+                <div class="text-4xl mb-4">🚨</div>
+                <div class="font-bold text-xl mb-2">Emergency Button</div>
+                <div class="text-sm text-slate-400">Tombol darurat satu klik yang langsung mengirim notifikasi ke semua admin dan direktur.</div>
+              </div>
+            </div>
+
+            <!-- ✅ STATISTIK -->
+            <div class="grid md:grid-cols-4 gap-4 mb-12">
+              <div class="glass rounded-3xl p-6 text-center">
+                <div class="text-4xl font-black text-cyan-300">24/7</div>
+                <div class="text-sm text-slate-400">Monitoring Aktif</div>
+              </div>
+              <div class="glass rounded-3xl p-6 text-center">
+                <div class="text-4xl font-black text-emerald-400">500+</div>
+                <div class="text-sm text-slate-400">Satpam Terdaftar</div>
+              </div>
+              <div class="glass rounded-3xl p-6 text-center">
+                <div class="text-4xl font-black text-violet-400">50ms</div>
+                <div class="text-sm text-slate-400">Latency Update</div>
+              </div>
+              <div class="glass rounded-3xl p-6 text-center">
+                <div class="text-4xl font-black text-amber-400">99.9%</div>
+                <div class="text-sm text-slate-400">Uptime Sistem</div>
+              </div>
+            </div>
+          </div>
+        </main>
+
+        <footer class="px-4 py-8 border-t border-white/5">
+          <div class="max-w-7xl mx-auto text-center text-slate-500 text-sm">
+            <div class="font-bold mb-1">© 2026 BINMAS • KEPOLISIAN NEGARA REPUBLIK INDONESIA</div>
+            <div>Sistem Informasi Pembinaan Masyarakat - Versi 2.0.0</div>
+          </div>
+        </footer>
+      </section>
+
+      <script>
+      // ✅ INITIALIZE PREVIEW MAP
+      const map = L.map('previewMap').setView([-3.5, 118], 5);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(map);
+
+      // ✅ SAMPLE RANDOM MARKER SATPAM DI SELURUH INDONESIA
+      const sampleSatpam = [
+        {name: "Satpam Jakarta", lat: -6.2, lng: 106.8},
+        {name: "Satpam Bandung", lat: -6.9, lng: 107.6},
+        {name: "Satpam Surabaya", lat: -7.25, lng: 112.75},
+        {name: "Satpam Medan", lat: 3.58, lng: 98.67},
+        {name: "Satpam Makassar", lat: -5.14, lng: 119.4},
+        {name: "Satpam Palembang", lat: -2.98, lng: 104.75},
+        {name: "Satpam Balikpapan", lat: -1.26, lng: 116.83},
+        {name: "Satpam Manado", lat: 1.49, lng: 124.84},
+        {name: "Satpam Denpasar", lat: -8.65, lng: 115.22},
+        {name: "Satpam Padang", lat: -0.95, lng: 100.35},
+        {name: "Satpam Banjarmasin", lat: -3.32, lng: 114.59},
+        {name: "Satpam Pontianak", lat: -0.02, lng: 109.34},
+      ];
+
+      sampleSatpam.forEach(satpam => {
+        // Random posisi sedikit agar tidak pas di titik tepat
+        const offsetLat = (Math.random() - 0.5) * 0.2;
+        const offsetLng = (Math.random() - 0.5) * 0.2;
+        const pos = [satpam.lat + offsetLat, satpam.lng + offsetLng];
+        
+        const customIcon = L.divIcon({
+          className: 'preview-marker',
+          html: `<div style="
+            background: #22c55e;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 3px solid white;
+            box-shadow: 0 0 12px #22c55e;
+          "></div>`,
+          iconSize: [14, 14],
+          iconAnchor: [7, 7]
+        });
+        
+        L.marker(pos, {icon: customIcon}).addTo(map)
+          .bindPopup(`<div style="min-width: 150px; padding: 8px;"><div style="font-weight: 900;">${satpam.name}</div><div style="font-size: 11px; color: #94a3b8;">✅ Online Aktif</div></div>`);
+      });
+
+      // ✅ ANIMASI MARKER BERGERAK SECARA OTOMATIS
+      setInterval(() => {
+        map.eachLayer(layer => {
+          if (layer instanceof L.Marker && !layer._icon.classList.contains('leaflet-drag-marker')) {
+            const pos = layer.getLatLng();
+            const newLat = pos.lat + (Math.random() - 0.5) * 0.005;
+            const newLng = pos.lng + (Math.random() - 0.5) * 0.005;
+            layer.setLatLng([newLat, newLng]);
+          }
+        });
+      }, 3000);
+      </script>
+    </body>
+    </html>
+    """)
+    
+    return body
 
 
 # HALAMAN UTAMA LOGIN DENGAN PILIHAN ROLE
