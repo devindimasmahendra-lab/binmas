@@ -1,6 +1,19 @@
 # FIX UNICODE ENCODING UNTUK WINDOWS CONSOLE
 import sys
 import os
+import logging
+
+# ✅ [FIX] Setup Logging Sistem - JANGAN LAGI PAKAI except: pass!
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    handlers=[
+        logging.FileHandler(os.path.join(os.path.dirname(__file__), "binmas_errors.log")),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 if sys.platform == "win32":
     # Paksa encoding stdout ke UTF-8
     sys.stdout.reconfigure(encoding='utf-8')
@@ -30,6 +43,9 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "app.db")
 PBKDF2_ITERATIONS = 260000
 DEFAULT_RESET_PASSWORD = "binmas@123"
 ROLES = ("anggota", "direktur_binmas", "admin", "satpam", "admin_bujp")
+
+# ✅ KONSTANTA NOMOR REKENING RESMI (UBAH DISINI SAJA JIKA BERUBAH)
+NOMOR_REKENING_DEFAULT = "BCA 1234567890 a/n PT. BINMAS SUMATERA SELATAN"
 
 # ✅ [FIX] Timezone Indonesia (WIB UTC+7) — dipakai untuk tampilan waktu lokal
 from datetime import timezone as _tz
@@ -256,8 +272,18 @@ def init_db():
         kontak_person TEXT DEFAULT '',
         status_kta_diambil TEXT DEFAULT 'pending',
         tanggal_pengambilan TEXT DEFAULT '',
+        -- ✅ [BARU] SISTEM PEMBAYARAN KTA
+        metode_pembayaran TEXT DEFAULT NULL CHECK(metode_pembayaran IN ('aplikasi', 'langsung', NULL)),
+        nomor_rekening_admin TEXT DEFAULT '',
+        bukti_pembayaran_url TEXT DEFAULT '',
+        status_pembayaran TEXT DEFAULT 'pending' CHECK(status_pembayaran IN ('pending', 'menunggu_verifikasi', 'terverifikasi', 'ditolak')),
+        tanggal_upload_bukti TEXT DEFAULT '',
+        admin_verifikasi_pembayaran_id INTEGER DEFAULT NULL,
+        tanggal_verifikasi_pembayaran TEXT DEFAULT '',
+        catatan_verifikasi_pembayaran TEXT DEFAULT '',
         FOREIGN KEY(user_id) REFERENCES users(id),
-        FOREIGN KEY(admin_id) REFERENCES users(id)
+        FOREIGN KEY(admin_id) REFERENCES users(id),
+        FOREIGN KEY(admin_verifikasi_pembayaran_id) REFERENCES users(id)
     );
 
     CREATE TABLE IF NOT EXISTS locations (
@@ -347,6 +373,35 @@ def init_db():
         updated_by INTEGER,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (updated_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS rekening_bank (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nama_bank TEXT NOT NULL,
+        nomor_rekening TEXT NOT NULL,
+        atas_nama TEXT NOT NULL,
+        keterangan TEXT DEFAULT '',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        urutan INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by INTEGER DEFAULT NULL,
+        updated_by INTEGER DEFAULT NULL,
+        FOREIGN KEY (created_by) REFERENCES users(id),
+        FOREIGN KEY (updated_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS rekening_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        rekening_id INTEGER NOT NULL,
+        aksi TEXT NOT NULL CHECK(aksi IN ('tambah', 'ubah', 'hapus', 'aktifkan', 'nonaktifkan')),
+        data_lama TEXT,
+        data_baru TEXT,
+        user_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        keterangan TEXT DEFAULT '',
+        FOREIGN KEY (rekening_id) REFERENCES rekening_bank(id),
+        FOREIGN KEY (user_id) REFERENCES users(id)
     );
 
 
@@ -485,6 +540,35 @@ def init_db():
         db.commit()
     except Exception:
         pass
+
+    # ✅ MIGRASI KOLOM PEMBAYARAN KTA
+    try:
+        cursor = db.execute("PRAGMA table_info(kta_perpanjangan)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        kta_payment_columns = [
+            ('metode_pembayaran', "TEXT DEFAULT NULL CHECK(metode_pembayaran IN ('aplikasi', 'langsung', NULL))"),
+            ('nomor_rekening_admin', "TEXT DEFAULT ''"),
+            ('bukti_pembayaran_url', "TEXT DEFAULT ''"),
+            ('status_pembayaran', "TEXT DEFAULT 'pending' CHECK(status_pembayaran IN ('pending', 'menunggu_verifikasi', 'terverifikasi', 'ditolak'))"),
+            ('tanggal_upload_bukti', "TEXT DEFAULT ''"),
+            ('admin_verifikasi_pembayaran_id', "INTEGER DEFAULT NULL REFERENCES users(id)"),
+            ('tanggal_verifikasi_pembayaran', "TEXT DEFAULT ''"),
+            ('catatan_verifikasi_pembayaran', "TEXT DEFAULT ''"),
+            ('jadwal_pengambilan', "TEXT DEFAULT ''"),
+            ('lokasi_pengambilan', "TEXT DEFAULT ''")
+        ]
+        
+        for col_name, col_def in kta_payment_columns:
+            if col_name not in columns:
+                try:
+                    db.execute(f"ALTER TABLE kta_perpanjangan ADD COLUMN {col_name} {col_def}")
+                    print(f"✅ [MIGRASI] Kolom {col_name} ditambahkan ke tabel kta_perpanjangan")
+                except:
+                    pass # abaikan jika sudah ada
+        db.commit()
+    except Exception as e:
+        logger.warning(f"⚠️ Gagal migrasi kolom pembayaran KTA: {e}")
 
 
     # MIGRASI TABEL USERS - TAMBAHKAN KOLOM bujp_id JIKA BELUM ADA
@@ -644,6 +728,7 @@ def nav_html(user):
             (url_for("admin_emergency_reports"), "📋 Daftar Laporan Darurat"),
             (url_for("admin_absensi_sesi"), "📅 Kelola Absensi"),   # ✅ [NEW]
             (url_for("admin_absensi_rekap"), "📊 Rekap Absensi"),   # ✅ [NEW]
+            (url_for("admin_rekening_management"), "💳 Manajemen Rekening"),   # ✅ [NEW]
             (url_for("change_password"), "Ganti Password"),
             (url_for("logout"), "Logout"),
         ]
@@ -4014,7 +4099,7 @@ def satpam_absen():
 
 @app.route("/api/absen", methods=["POST"])
 @login_required
-@roles_required("satpam")
+@roles_required("satpam", "anggota", "admin_bujp")
 def api_absen():
     user = current_user()
     data = request.get_json(silent=True) or {}
@@ -4132,23 +4217,22 @@ def get_absensi_config(db=None):
 
 
 def get_sesi_aktif(bujp_id=None, db=None):
-    """Ambil sesi absensi yang sedang aktif hari ini."""
+    """Ambil sesi absensi yang sedang aktif (TANPA BATAS WAKTU TANGGAL)"""
     if db is None:
         db = get_db()
-    today = now_wib().strftime("%Y-%m-%d")
     if bujp_id:
         return db.execute("""
             SELECT * FROM absensi_sesi
-            WHERE status = 'aktif' AND DATE(tanggal) = ?
+            WHERE status = 'aktif'
             AND (bujp_id IS NULL OR bujp_id = ?)
             ORDER BY id DESC LIMIT 1
-        """, (today, bujp_id)).fetchone()
+        """, (bujp_id,)).fetchone()
     else:
         return db.execute("""
             SELECT * FROM absensi_sesi
-            WHERE status = 'aktif' AND DATE(tanggal) = ?
+            WHERE status = 'aktif'
             ORDER BY id DESC LIMIT 1
-        """, (today,)).fetchone()
+        """).fetchone()
 
 
 @app.route("/admin/absensi/sesi")
@@ -4245,7 +4329,14 @@ def admin_absensi_sesi():
             {% for s in sesi_list %}
               <tr class="hover:bg-white/5 transition">
                 <td class="px-5 py-3 font-bold">{{ s.nama_sesi }}</td>
-                <td class="px-5 py-3 text-sm">{{ s.tanggal }}</td>
+                <td class="px-5 py-3 text-sm">
+                  {% if s.status == 'aktif' %}
+                    <span class="text-emerald-300 font-bold">✅ TERUS BERJALAN</span>
+                    <div class="text-[10px] text-slate-400">Mulai: {{ s.tanggal }}</div>
+                  {% else %}
+                    {{ s.tanggal }}
+                  {% endif %}
+                </td>
                 <td class="px-5 py-3 text-sm text-emerald-300">{{ s.jam_buka_masuk }}–{{ s.jam_tutup_masuk }}</td>
                 <td class="px-5 py-3 text-sm text-orange-300">{{ s.jam_buka_keluar or '-' }}–{{ s.jam_tutup_keluar or '-' }}</td>
                 <td class="px-5 py-3 text-sm text-amber-300">{{ s.nama_bujp or 'Semua BUJP' }}</td>
@@ -4266,16 +4357,17 @@ def admin_absensi_sesi():
                 </td>
                 <td class="px-5 py-3">
                   <div class="flex gap-2">
-                    {% if s.status == 'draft' %}
-                    <form method="post" action="/admin/absensi/sesi/{{ s.id }}/aktifkan">
-                      <button class="px-3 py-1 rounded-xl bg-emerald-500/20 text-emerald-400 text-xs font-bold">▶ Aktifkan</button>
+                    <!-- ✅ EDIT STATUS SESI LANGSUNG DARI DAFTAR -->
+                    <form method="post" action="/admin/absensi/sesi/{{ s.id }}/update-status" class="flex gap-1">
+                      <select name="status" onchange="this.form.submit()"
+                        class="px-2 py-1 rounded-xl bg-white/5 border border-white/10 text-xs font-bold outline-none">
+                        <option value="draft" {% if s.status == 'draft' %}selected{% endif %}>📝 Draft</option>
+                        <option value="aktif" {% if s.status == 'aktif' %}selected{% endif %}>🟢 Aktif</option>
+                        <option value="selesai" {% if s.status == 'selesai' %}selected{% endif %}>✅ Selesai</option>
+                        <option value="ditutup" {% if s.status == 'ditutup' %}selected{% endif %}>🔴 Ditutup</option>
+                      </select>
                     </form>
-                    {% endif %}
-                    {% if s.status == 'aktif' %}
-                    <form method="post" action="/admin/absensi/sesi/{{ s.id }}/tutup">
-                      <button class="px-3 py-1 rounded-xl bg-red-500/20 text-red-400 text-xs font-bold">⏹ Tutup</button>
-                    </form>
-                    {% endif %}
+                    
                     <a href="/admin/absensi/sesi/{{ s.id }}/detail"
                       class="px-3 py-1 rounded-xl bg-cyan-500/20 text-cyan-400 text-xs font-bold">👁 Detail</a>
                   </div>
@@ -4482,6 +4574,37 @@ def admin_absensi_sesi_tutup(sesi_id):
     """, (ts, sesi_id))
     db.commit()
     log_action("ADMIN_TUTUP_SESI", "absensi_sesi", sesi_id)
+    return redirect(url_for("admin_absensi_sesi"))
+
+
+# ✅ ROUTE BARU UNTUK UPDATE STATUS SESI LANGSUNG DARI DAFTAR
+@app.route("/admin/absensi/sesi/<int:sesi_id>/update-status", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_absensi_sesi_update_status(sesi_id):
+    db = get_db()
+    ts = now_str()
+    user = current_user()
+    
+    status_baru = request.form.get("status")
+    # Validasi status hanya boleh nilai yang diizinkan
+    if status_baru not in ('draft', 'aktif', 'selesai', 'ditutup'):
+        return redirect(url_for("admin_absensi_sesi"))
+    
+    # Jika diaktifkan, set juga diaktifkan_oleh dan diaktifkan_at
+    if status_baru == 'aktif':
+        db.execute("""
+            UPDATE absensi_sesi 
+            SET status=?, diaktifkan_oleh=?, diaktifkan_at=?, updated_at=? 
+            WHERE id=?
+        """, (status_baru, user["id"], ts, ts, sesi_id))
+    else:
+        db.execute("""
+            UPDATE absensi_sesi SET status=?, updated_at=? WHERE id=?
+        """, (status_baru, ts, sesi_id))
+    
+    db.commit()
+    log_action("ADMIN_UPDATE_STATUS_SESI", "absensi_sesi", sesi_id, f"status_baru={status_baru}")
     return redirect(url_for("admin_absensi_sesi"))
 
 
@@ -5598,6 +5721,12 @@ def admin_dashboard():
         "SELECT a.*, u.username AS actor_username, u.full_name AS actor_name FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_user_id ORDER BY a.id DESC LIMIT 100"
     ).fetchall()
 
+    # ✅ MANAJEMEN NOMOR REKENING
+    rekening_list = db.execute("""
+        SELECT * FROM rekening_bank 
+        ORDER BY urutan ASC, id ASC
+    """).fetchall()
+
     body = render_template_string("""
     <div class="mt-6">
 
@@ -5623,15 +5752,16 @@ def admin_dashboard():
 
       <!-- Tab Navigation -->
       <div class="flex gap-2 mb-6 border-b border-white/10 pb-3">
-        <button id="tabUsers" onclick="showTab('users')" class="px-5 py-3 rounded-2xl bg-cyan-500 text-slate-950 font-bold tab-btn">👥 CRUD User</button>
+        <button id="tabUsers" onclick="showTab('users')" class="px-5 py-3 rounded-2xl bg-cyan-500 text-slate-950 font-bold tab-btn">👥 Data Satpam</button>
         <button id="tabGeofence" onclick="showTab('geofence')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">🗺️ Geofence Editor</button>
+        <button id="tabRekening" onclick="showTab('rekening')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">💳 Nomor Rekening</button>
         <button id="tabAudit" onclick="showTab('audit')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">📋 Audit Log</button>
       </div>
 
       <!-- Tab Users -->
       <div id="tabUsersContent" class="glass rounded-3xl p-5">
         <div class="flex items-center justify-between gap-3 mb-5 flex-wrap">
-          <h2 class="text-2xl font-black">CRUD User</h2>
+          <h2 class="text-2xl font-black">Data Satpam</h2>
           <div class="flex gap-3 items-center flex-wrap">
             <input id="searchUser" oninput="filterUsers()" placeholder="🔍 Cari user..." class="rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none w-64">
             <button onclick="showAddUserModal()" class="px-4 py-3 rounded-2xl bg-emerald-500 text-slate-950 font-bold">
@@ -5740,6 +5870,156 @@ def admin_dashboard():
           </div>
         </div>
       </div>
+
+      <!-- Tab Rekening -->
+      <div id="tabRekeningContent" class="glass rounded-3xl p-5 hidden">
+        <div class="flex justify-between items-center mb-6 flex-wrap gap-4">
+          <h2 class="text-2xl font-black">💳 Manajemen Nomor Rekening Resmi</h2>
+            <button onclick="showAddRekeningModal()" class="px-4 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition">
+                ➕ Tambah Rekening Baru
+            </button>
+
+<!-- Modal Tambah Rekening -->
+<div id="addRekeningModal" class="fixed inset-0 bg-black/90 z-50 hidden flex items-center justify-center p-2 sm:p-4">
+    <div class="glass rounded-3xl w-full max-w-lg max-h-[95vh] overflow-auto">
+        <div class="sticky top-0 bg-gradient-to-b from-[#0f172a] to-[#0f172a]/95 p-4 sm:p-6 border-b border-white/10">
+            <div class="flex justify-between items-center gap-3">
+                <div class="text-xl sm:text-2xl font-black text-emerald-400">➕ TAMBAH REKENING BARU</div>
+                <button onclick="closeAddRekeningModal()" class="w-12 h-12 rounded-2xl bg-white/5 hover:bg-white/10 text-xl flex items-center justify-center transition">✕</button>
+            </div>
+        </div>
+        <div class="p-4 sm:p-6 space-y-4">
+            <form id="formAddRekening" onsubmit="submitRekening(event)">
+                <div class="space-y-3">
+                    <div>
+                        <label class="text-xs text-slate-400 mb-1 block">Nama Bank</label>
+                        <input type="text" name="nama_bank" required class="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:border-emerald-500 outline-none transition">
+                    </div>
+                    <div>
+                        <label class="text-xs text-slate-400 mb-1 block">Nomor Rekening</label>
+                        <input type="text" name="nomor_rekening" required class="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:border-emerald-500 outline-none transition">
+                    </div>
+                    <div>
+                        <label class="text-xs text-slate-400 mb-1 block">Atas Nama</label>
+                        <input type="text" name="atas_nama" required class="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:border-emerald-500 outline-none transition">
+                    </div>
+                    <div>
+                        <label class="text-xs text-slate-400 mb-1 block">Keterangan (Opsional)</label>
+                        <textarea name="keterangan" rows="2" class="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:border-emerald-500 outline-none transition"></textarea>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3 pt-4">
+                    <button type="button" onclick="closeAddRekeningModal()" class="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 text-center font-bold hover:bg-white/10 transition">
+                        ❌ BATAL
+                    </button>
+                    <button type="submit" class="px-4 py-3 rounded-2xl bg-emerald-500 text-slate-950 text-center font-bold hover:bg-emerald-400 transition">
+                        ✅ SIMPAN
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function showAddRekeningModal() {
+    document.getElementById('addRekeningModal').classList.remove('hidden');
+}
+
+function closeAddRekeningModal() {
+    document.getElementById('addRekeningModal').classList.add('hidden');
+    document.getElementById('formAddRekening').reset();
+}
+
+async function submitRekening(e) {
+    e.preventDefault();
+    
+    const form = document.getElementById('formAddRekening');
+    const formData = new FormData(form);
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const originalText = submitBtn.textContent;
+    
+    try {
+        submitBtn.disabled = true;
+        submitBtn.textContent = '⏳ Menyimpan...';
+        
+        const response = await fetch('/admin/rekening/save', {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin'
+        });
+        
+        const result = await response.json();
+        
+        if (result.ok) {
+            alert('✅ Rekening berhasil disimpan!');
+            closeAddRekeningModal();
+            window.location.reload();
+        } else {
+            alert('❌ Gagal menyimpan: ' + (result.error || 'Terjadi kesalahan'));
+        }
+    } catch (err) {
+        alert('❌ Gagal terhubung ke server: ' + err.message);
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalText;
+    }
+}
+</script>
+          </button>
+        </div>
+        
+        <div class="p-3 mb-4 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-sm text-slate-300">
+          ✅ Daftar nomor rekening yang tercantum disini akan muncul otomatis di halaman pengajuan pembayaran KTA SATPAM. Setiap perubahan akan dicatat di history dengan nama admin yang mengubah.
+        </div>
+        
+        <div class="overflow-auto max-h-[60vh]">
+          <table class="w-full text-sm">
+            <thead class="sticky top-0 bg-[#0f172a] z-10">
+              <tr class="border-b border-white/10 text-slate-400">
+                <th class="py-3 px-2 text-left">No</th>
+                <th class="py-3 px-2 text-left">Nama Bank</th>
+                <th class="py-3 px-2 text-left">Nomor Rekening</th>
+                <th class="py-3 px-2 text-left">Atas Nama</th>
+                <th class="py-3 px-2 text-center">Status</th>
+                <th class="py-3 px-2 text-center">Update</th>
+                <th class="py-3 px-2 text-center">Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for rekening in rekening_list %}
+              <tr class="border-b border-white/5 hover:bg-white/5 transition">
+                <td class="py-2 px-2 text-slate-500 font-mono">#{{ rekening.id }}</td>
+                <td class="py-2 px-2 font-bold">{{ rekening.nama_bank }}</td>
+                <td class="py-2 px-2 font-mono text-cyan-300">{{ rekening.nomor_rekening }}</td>
+                <td class="py-2 px-2">{{ rekening.atas_nama }}</td>
+                <td class="py-2 px-2 text-center">
+                  {% if rekening.is_active %}
+                    <span class="text-emerald-400">✅ Aktif</span>
+                  {% else %}
+                    <span class="text-slate-500">⚪ Nonaktif</span>
+                  {% endif %}
+                </td>
+                <td class="py-2 px-2 text-center text-slate-500 text-xs">{{ rekening.updated_at.split(' ')[0] }}</td>
+                <td class="py-2 px-2 text-center">
+                  <div class="flex items-center justify-center gap-1">
+                    <button onclick="editRekening({{ rekening.id }}, '{{ rekening.nama_bank.replace("'", "\\'") }}', '{{ rekening.nomor_rekening }}', '{{ rekening.atas_nama.replace("'", "\\'") }}', '{{ rekening.keterangan.replace("'", "\\'") }}', {{ rekening.is_active }})" class="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30">✏️</button>
+                    <button onclick="toggleRekening({{ rekening.id }}, {{ 0 if rekening.is_active else 1 }})" class="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30">
+                      {% if rekening.is_active %}🔴{% else %}🟢{% endif %}
+                    </button>
+                    <button onclick="deleteRekening({{ rekening.id }})" class="w-7 h-7 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30">🗑️</button>
+                    <button onclick="showRekeningHistory({{ rekening.id }})" class="w-7 h-7 rounded-lg bg-violet-500/20 text-violet-400 hover:bg-violet-500/30">📋</button>
+                  </div>
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="7" class="py-8 text-center text-slate-400">Belum ada nomor rekening yang didaftarkan</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
 
       <!-- Tab Audit Log -->
       <div id="tabAuditContent" class="glass rounded-3xl p-5 hidden">
@@ -6111,6 +6391,356 @@ def admin_geofence_delete(geofence_id):
     return redirect(url_for("admin_dashboard"))
 
 
+# ==============================================
+# ✅ ROUTE CRUD MANAJEMEN NOMOR REKENING
+# ==============================================
+
+@app.route("/admin/rekening/tambah", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_rekening_tambah():
+    db = get_db()
+    ts = now_str()
+    user = current_user()
+    
+    nama_bank = (request.form.get("nama_bank") or "").strip()
+    nomor_rekening = (request.form.get("nomor_rekening") or "").strip()
+    atas_nama = (request.form.get("atas_nama") or "").strip()
+    keterangan = (request.form.get("keterangan") or "").strip()
+    urutan = int(request.form.get("urutan") or 0)
+    
+    if not nama_bank or not nomor_rekening or not atas_nama:
+        abort(400, "Semua field wajib diisi")
+    
+    cur = db.execute("""
+        INSERT INTO rekening_bank (
+            nama_bank, nomor_rekening, atas_nama, keterangan, urutan, is_active,
+            created_at, updated_at, created_by, updated_by
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+    """, (
+        nama_bank, nomor_rekening, atas_nama, keterangan, urutan,
+        ts, ts, user["id"], user["id"]
+    ))
+    
+    rekening_id = cur.lastrowid
+    
+    # ✅ CATAT HISTORY
+    db.execute("""
+        INSERT INTO rekening_history (
+            rekening_id, aksi, data_baru, user_id, created_at, keterangan
+        ) VALUES (?, 'tambah', ?, ?, ?, ?)
+    """, (
+        rekening_id,
+        json.dumps({
+            "nama_bank": nama_bank,
+            "nomor_rekening": nomor_rekening,
+            "atas_nama": atas_nama,
+            "keterangan": keterangan,
+            "urutan": urutan
+        }),
+        user["id"],
+        ts,
+        "Rekening baru ditambahkan"
+    ))
+    
+    db.commit()
+    log_action("ADMIN_TAMBAH_REKENING", "rekening_bank", rekening_id)
+    
+    return redirect(url_for("admin_dashboard") + "#tabRekening")
+
+
+@app.route("/admin/rekening/<int:id>/edit", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_rekening_edit(id):
+    db = get_db()
+    ts = now_str()
+    user = current_user()
+    
+    # Ambil data lama sebelum diubah
+    data_lama = db.execute("SELECT * FROM rekening_bank WHERE id = ?", (id,)).fetchone()
+    if not data_lama:
+        abort(404)
+    
+    nama_bank = (request.form.get("nama_bank") or "").strip()
+    nomor_rekening = (request.form.get("nomor_rekening") or "").strip()
+    atas_nama = (request.form.get("atas_nama") or "").strip()
+    keterangan = (request.form.get("keterangan") or "").strip()
+    urutan = int(request.form.get("urutan") or 0)
+    
+    if not nama_bank or not nomor_rekening or not atas_nama:
+        abort(400, "Semua field wajib diisi")
+    
+    db.execute("""
+        UPDATE rekening_bank SET
+            nama_bank = ?,
+            nomor_rekening = ?,
+            atas_nama = ?,
+            keterangan = ?,
+            urutan = ?,
+            updated_at = ?,
+            updated_by = ?
+        WHERE id = ?
+    """, (
+        nama_bank, nomor_rekening, atas_nama, keterangan, urutan,
+        ts, user["id"], id
+    ))
+    
+    # ✅ CATAT HISTORY PERUBAHAN
+    db.execute("""
+        INSERT INTO rekening_history (
+            rekening_id, aksi, data_lama, data_baru, user_id, created_at, keterangan
+        ) VALUES (?, 'ubah', ?, ?, ?, ?, ?)
+    """, (
+        id,
+        json.dumps(dict(data_lama)),
+        json.dumps({
+            "nama_bank": nama_bank,
+            "nomor_rekening": nomor_rekening,
+            "atas_nama": atas_nama,
+            "keterangan": keterangan,
+            "urutan": urutan
+        }),
+        user["id"],
+        ts,
+        "Data rekening diubah"
+    ))
+    
+    db.commit()
+    log_action("ADMIN_EDIT_REKENING", "rekening_bank", id)
+    
+    return redirect(url_for("admin_dashboard") + "#tabRekening")
+
+
+@app.route("/admin/rekening/<int:id>/toggle", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_rekening_toggle(id):
+    db = get_db()
+    ts = now_str()
+    user = current_user()
+    
+    rekening = db.execute("SELECT id, is_active FROM rekening_bank WHERE id = ?", (id,)).fetchone()
+    if not rekening:
+        abort(404)
+    
+    status_baru = 0 if rekening["is_active"] == 1 else 1
+    aksi = "nonaktifkan" if status_baru == 0 else "aktifkan"
+    
+    db.execute("""
+        UPDATE rekening_bank SET is_active = ?, updated_at = ?, updated_by = ? WHERE id = ?
+    """, (status_baru, ts, user["id"], id))
+    
+    # ✅ CATAT HISTORY
+    db.execute("""
+        INSERT INTO rekening_history (
+            rekening_id, aksi, user_id, created_at, keterangan
+        ) VALUES (?, ?, ?, ?, ?)
+    """, (
+        id,
+        aksi,
+        user["id"],
+        ts,
+        f"Status rekening diubah menjadi {'nonaktif' if status_baru == 0 else 'aktif'}"
+    ))
+    
+    db.commit()
+    log_action(f"ADMIN_{aksi.upper()}_REKENING", "rekening_bank", id)
+    
+    return redirect(url_for("admin_dashboard") + "#tabRekening")
+
+
+@app.route("/admin/rekening/<int:id>/delete", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_rekening_delete(id):
+    db = get_db()
+    ts = now_str()
+    user = current_user()
+    
+    # Ambil data sebelum dihapus
+    data_lama = db.execute("SELECT * FROM rekening_bank WHERE id = ?", (id,)).fetchone()
+    if not data_lama:
+        abort(404)
+    
+    # Hapus rekening
+    db.execute("DELETE FROM rekening_bank WHERE id = ?", (id,))
+    
+    # ✅ CATAT HISTORY
+    db.execute("""
+        INSERT INTO rekening_history (
+            rekening_id, aksi, data_lama, user_id, created_at, keterangan
+        ) VALUES (?, 'hapus', ?, ?, ?, ?)
+    """, (
+        id,
+        json.dumps(dict(data_lama)),
+        user["id"],
+        ts,
+        "Rekening dihapus permanen"
+    ))
+    
+    db.commit()
+    log_action("ADMIN_HAPUS_REKENING", "rekening_bank", id)
+    
+    return redirect(url_for("admin_dashboard") + "#tabRekening")
+
+
+@app.route("/admin/rekening")
+@app.route("/admin/rekening/save", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_rekening_save():
+    db = get_db()
+    ts = now_str()
+    user = current_user()
+    
+    nama_bank = (request.form.get("nama_bank") or "").strip()
+    nomor_rekening = (request.form.get("nomor_rekening") or "").strip()
+    atas_nama = (request.form.get("atas_nama") or "").strip()
+    keterangan = (request.form.get("keterangan") or "").strip()
+    
+    if not nama_bank or not nomor_rekening or not atas_nama:
+        return jsonify({"ok": False, "error": "Semua field wajib diisi"})
+    
+    try:
+        cur = db.execute("""
+            INSERT INTO rekening_bank (
+                nama_bank, nomor_rekening, atas_nama, keterangan, urutan, is_active,
+                created_at, updated_at, created_by, updated_by
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+        """, (
+            nama_bank, nomor_rekening, atas_nama, keterangan, 0,
+            ts, ts, user["id"], user["id"]
+        ))
+        
+        rekening_id = cur.lastrowid
+        
+        # ✅ CATAT HISTORY
+        db.execute("""
+            INSERT INTO rekening_history (
+                rekening_id, aksi, data_baru, user_id, created_at, keterangan
+            ) VALUES (?, 'tambah', ?, ?, ?, ?)
+        """, (
+            rekening_id,
+            json.dumps({
+                "nama_bank": nama_bank,
+                "nomor_rekening": nomor_rekening,
+                "atas_nama": atas_nama,
+                "keterangan": keterangan
+            }),
+            user["id"],
+            ts,
+            "Rekening baru ditambahkan melalui dashboard admin"
+        ))
+        
+        db.commit()
+        log_action("ADMIN_SAVE_REKENING", "rekening_bank", rekening_id)
+        
+        return jsonify({"ok": True, "id": rekening_id, "message": "Rekening berhasil disimpan"})
+        
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/admin/rekening/management")
+@login_required
+@roles_required("admin")
+def admin_rekening_management():
+    user = current_user()
+    db = get_db()
+    
+    # ✅ MANAJEMEN NOMOR REKENING
+    rekening_list = db.execute("""
+        SELECT * FROM rekening_bank 
+        ORDER BY urutan ASC, id ASC
+    """).fetchall()
+    
+    body = render_template_string("""
+    <div class="mt-6">
+        <div class="flex justify-between items-center mb-6 flex-wrap gap-4">
+            <div>
+                <h1 class="text-3xl font-black">💳 Manajemen Nomor Rekening Resmi</h1>
+                <p class="text-slate-400 mt-1">Kelola daftar nomor rekening yang digunakan untuk pembayaran KTA SATPAM</p>
+            </div>
+            <button onclick="showAddRekeningModal()" class="px-4 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition">
+                ➕ Tambah Rekening Baru
+            </button>
+        </div>
+        
+        <div class="p-3 mb-4 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-sm text-slate-300">
+            ✅ Daftar nomor rekening yang tercantum disini akan muncul otomatis di halaman pengajuan pembayaran KTA SATPAM. Setiap perubahan akan dicatat di history dengan nama admin yang mengubah.
+        </div>
+        
+        <div class="glass rounded-3xl p-5">
+            <div class="overflow-auto max-h-[75vh]">
+                <table class="w-full text-sm">
+                    <thead class="sticky top-0 bg-[#0f172a] z-10">
+                        <tr class="border-b border-white/10 text-slate-400">
+                            <th class="py-3 px-2 text-left">No</th>
+                            <th class="py-3 px-2 text-left">Nama Bank</th>
+                            <th class="py-3 px-2 text-left">Nomor Rekening</th>
+                            <th class="py-3 px-2 text-left">Atas Nama</th>
+                            <th class="py-3 px-2 text-center">Status</th>
+                            <th class="py-3 px-2 text-center">Update</th>
+                            <th class="py-3 px-2 text-center">Aksi</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for rekening in rekening_list %}
+                        <tr class="border-b border-white/5 hover:bg-white/5 transition">
+                            <td class="py-2 px-2 text-slate-500 font-mono">#{{ rekening.id }}</td>
+                            <td class="py-2 px-2 font-bold">{{ rekening.nama_bank }}</td>
+                            <td class="py-2 px-2 font-mono text-cyan-300">{{ rekening.nomor_rekening }}</td>
+                            <td class="py-2 px-2">{{ rekening.atas_nama }}</td>
+                            <td class="py-2 px-2 text-center">
+                                {% if rekening.is_active %}
+                                    <span class="text-emerald-400">✅ Aktif</span>
+                                {% else %}
+                                    <span class="text-slate-500">⚪ Nonaktif</span>
+                                {% endif %}
+                            </td>
+                            <td class="py-2 px-2 text-center text-slate-500 text-xs">{{ rekening.updated_at.split(' ')[0] }}</td>
+                            <td class="py-2 px-2 text-center">
+                                <div class="flex items-center justify-center gap-1">
+                                    <button onclick="editRekening({{ rekening.id }}, '{{ rekening.nama_bank.replace("'", "\\'") }}', '{{ rekening.nomor_rekening }}', '{{ rekening.atas_nama.replace("'", "\\'") }}', '{{ rekening.keterangan.replace("'", "\\'") }}', {{ rekening.is_active }})" class="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30">✏️</button>
+                                    <button onclick="toggleRekening({{ rekening.id }}, {{ 0 if rekening.is_active else 1 }})" class="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30">
+                                        {% if rekening.is_active %}🔴{% else %}🟢{% endif %}
+                                    </button>
+                                    <button onclick="deleteRekening({{ rekening.id }})" class="w-7 h-7 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30">🗑️</button>
+                                    <button onclick="showRekeningHistory({{ rekening.id }})" class="w-7 h-7 rounded-lg bg-violet-500/20 text-violet-400 hover:bg-violet-500/30">📋</button>
+                                </div>
+                            </td>
+                        </tr>
+                    {% else %}
+                        <tr><td colspan="7" class="py-8 text-center text-slate-400">Belum ada nomor rekening yang didaftarkan</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    """, rekening_list=rekening_list)
+
+    return render_page("Manajemen Rekening", body, user)
+
+
+@app.route("/admin/rekening/<int:id>/history")
+@login_required
+@roles_required("admin")
+def admin_rekening_history(id):
+    db = get_db()
+    
+    history = db.execute("""
+        SELECT h.*, u.full_name, u.username
+        FROM rekening_history h
+        JOIN users u ON u.id = h.user_id
+        WHERE h.rekening_id = ?
+        ORDER BY h.id DESC
+    """, (id,)).fetchall()
+    
+    return jsonify([dict(row) for row in history])
+
+
 @app.route("/api/geofences")
 @login_required
 def api_geofences():
@@ -6429,6 +7059,121 @@ def not_found(_e):
 
 
 
+# 📁 UPLOAD BUKTI PEMBAYARAN KTA
+@app.route("/satpam/kta/<int:id>/pilih-metode", methods=["POST"])
+@login_required
+@roles_required("satpam")
+def satpam_kta_pilih_metode(id):
+    user = current_user()
+    db = get_db()
+    ts = now_str()
+    
+    pengajuan = db.execute("SELECT * FROM kta_perpanjangan WHERE id = ? AND user_id = ?", (id, user["id"])).fetchone()
+    if not pengajuan:
+        abort(404)
+    
+    metode = request.form.get("metode") or ""
+    if metode not in ('aplikasi', 'langsung'):
+        abort(400)
+    
+    db.execute("""
+        UPDATE kta_perpanjangan 
+        SET metode_pembayaran = ?,
+            tanggal_pengajuan = ?
+        WHERE id = ?
+    """, (metode, ts, id))
+    db.commit()
+    log_action(f"SATPAM_PILIH_METODE_BAYAR_{metode.upper()}", "kta_perpanjangan", id)
+    
+    return redirect(url_for("satpam_perpanjang_kta"))
+
+
+@app.route("/satpam/kta/<int:id>/upload-bukti", methods=["POST"])
+@login_required
+@roles_required("satpam")
+def satpam_kta_upload_bukti(id):
+    user = current_user()
+    db = get_db()
+    ts = now_str()
+    
+    pengajuan = db.execute("SELECT * FROM kta_perpanjangan WHERE id = ? AND user_id = ?", (id, user["id"])).fetchone()
+    if not pengajuan:
+        abort(404)
+    
+    if 'bukti_pembayaran' in request.files:
+        foto = request.files['bukti_pembayaran']
+        if foto.filename != '':
+            upload_dir = os.path.join(os.path.dirname(__file__), "uploads", "kta_pembayaran")
+            os.makedirs(upload_dir, exist_ok=True)
+            ext = os.path.splitext(foto.filename)[1]
+            filename = f"kta_bayar_{user['id']}_{int(datetime.now().timestamp())}{ext}"
+            file_path = os.path.join(upload_dir, filename)
+            foto.save(file_path)
+            
+            db.execute("""
+                UPDATE kta_perpanjangan 
+                SET bukti_pembayaran_url = ?, 
+                    tanggal_upload_bukti = ?, 
+                    status_pembayaran = 'menunggu_verifikasi'
+                WHERE id = ?
+            """, (f"/uploads/kta_pembayaran/{filename}", ts, id))
+            db.commit()
+            log_action("SATPAM_UPLOAD_BUKTI_BAYAR_KTA", "kta_perpanjangan", id)
+    
+    return redirect(url_for("satpam_perpanjang_kta"))
+
+# 📁 SERVE UPLOAD PEMBAYARAN
+@app.route('/uploads/kta_pembayaran/<path:filename>')
+def serve_kta_pembayaran(filename):
+    upload_dir = os.path.join(os.path.dirname(__file__), "uploads", "kta_pembayaran")
+    return send_from_directory(upload_dir, filename)
+
+# ✅ ADMIN KIRIM NOMOR REKENING
+@app.route("/admin/kta/<int:id>/kirim-rekening", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_kta_kirim_rekening(id):
+    db = get_db()
+    ts = now_str()
+    nomor_rekening = request.form.get("nomor_rekening") or ""
+    catatan = request.form.get("catatan") or ""
+    
+    db.execute("""
+        UPDATE kta_perpanjangan 
+        SET nomor_rekening_admin = ?, 
+            metode_pembayaran = 'aplikasi',
+            catatan_admin = ?,
+            tanggal_verifikasi = ?
+        WHERE id = ?
+    """, (nomor_rekening, catatan, ts, id))
+    db.commit()
+    log_action("ADMIN_KIRIM_REKENING_KTA", "kta_perpanjangan", id)
+    return redirect(url_for("admin_kta_perpanjangan"))
+
+# ✅ ADMIN VERIFIKASI PEMBAYARAN
+@app.route("/admin/kta/<int:id>/verifikasi-pembayaran", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_kta_verifikasi_pembayaran(id):
+    db = get_db()
+    ts = now_str()
+    admin_id = current_user()["id"]
+    status = request.form.get("status") or "terverifikasi"
+    catatan = request.form.get("catatan_verifikasi") or ""
+    
+    db.execute("""
+        UPDATE kta_perpanjangan 
+        SET status_pembayaran = ?, 
+            catatan_verifikasi_pembayaran = ?,
+            admin_verifikasi_pembayaran_id = ?,
+            tanggal_verifikasi_pembayaran = ?
+        WHERE id = ?
+    """, (status, catatan, admin_id, ts, id))
+    db.commit()
+    log_action(f"ADMIN_VERIFIKASI_BAYAR_KTA_{status.upper()}", "kta_perpanjangan", id)
+    return redirect(url_for("admin_kta_perpanjangan"))
+
+
 @app.route("/satpam/perpanjang-kta", methods=["GET", "POST"])
 @login_required
 @roles_required("satpam")
@@ -6499,12 +7244,106 @@ def satpam_perpanjang_kta():
         
         {% if pending %}
         <div class="mb-6 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20">
-          <div class="text-center">
+          <div class="text-center mb-4">
             <div class="text-4xl mb-2">⏳</div>
             <div class="font-bold text-amber-300">PENGAJUAN SEDANG DIPROSES</div>
-            <div class="text-sm text-slate-400 mt-2">Pengajuan perpanjangan KTA Anda sedang menunggu verifikasi Admin. Silahkan cek secara berkala.</div>
             <div class="text-xs text-slate-500 mt-2">Tanggal Pengajuan: {{ pending.tanggal_pengajuan }}</div>
           </div>
+
+          <!-- ✅ PROGRESS BAR STEP PENGAJUAN KTA -->
+          <div class="mb-4">
+            <div class="flex justify-between text-xs text-slate-400 mb-2">
+              <span class="{{ 'text-emerald-400 font-bold' }}">1. Ajukan</span>
+              <span class="{{ 'text-amber-400 font-bold' if pending.metode_pembayaran else '' }}">2. Bayar</span>
+              <span class="{{ 'text-emerald-400 font-bold' if pending.status_pembayaran == 'terverifikasi' else '' }}">3. Verifikasi</span>
+              <span class="{{ 'text-emerald-400 font-bold' if pending.status == 'disetujui' else '' }}">4. Selesai</span>
+            </div>
+            <div class="h-2 bg-white/10 rounded-full overflow-hidden">
+              <div class="h-full bg-gradient-to-r from-amber-500 to-emerald-500 rounded-full transition-all" style="width: {% if pending.status == 'disetujui' %}100%{% elif pending.status_pembayaran == 'terverifikasi' %}75%{% elif pending.bukti_pembayaran_url %}50%{% else %}25%{% endif %}"></div>
+            </div>
+          </div>
+
+          <!-- ✅ PILIHAN METODE PEMBAYARAN -->
+          {% if not pending.metode_pembayaran %}
+          <div class="grid grid-cols-2 gap-3 mb-4">
+            <form method="post" action="/satpam/kta/{{ pending.id }}/pilih-metode">
+              <input type="hidden" name="metode" value="langsung">
+              <button type="submit" class="w-full p-4 rounded-2xl bg-white/5 hover:bg-emerald-500/10 border border-white/10 hover:border-emerald-500/30 transition text-center">
+                <div class="text-3xl mb-2">📍</div>
+                <div class="font-bold">BAYAR LANGSUNG</div>
+                <div class="text-xs text-slate-400 mt-1">Datang langsung ke kantor Binmas</div>
+              </button>
+            </form>
+            <form method="post" action="/satpam/kta/{{ pending.id }}/pilih-metode">
+              <input type="hidden" name="metode" value="aplikasi">
+              <button type="submit" class="w-full p-4 rounded-2xl bg-white/5 hover:bg-cyan-500/10 border border-white/10 hover:border-cyan-500/30 transition text-center">
+                <div class="text-3xl mb-2">💳</div>
+                <div class="font-bold">BAYAR VIA APLIKASI</div>
+                <div class="text-xs text-slate-400 mt-1">Transfer ke rekening resmi</div>
+              </button>
+            </form>
+          </div>
+          {% endif %}
+
+          <!-- ✅ JIKA SUDAH PILIH METODE APLIKASI -->
+          {% if pending.metode_pembayaran == 'aplikasi' %}
+            {% if pending.nomor_rekening_admin %}
+            <div class="mb-4 p-4 rounded-2xl bg-cyan-500/10 border border-cyan-500/20">
+              <div class="text-center mb-2">
+                <div class="font-bold text-cyan-300">✅ NOMOR REKENING RESMI</div>
+                <div class="text-2xl font-black mt-2 text-white">{{ pending.nomor_rekening_admin }}</div>
+              </div>
+            </div>
+            {% else %}
+            <div class="mb-4 p-3 rounded-2xl bg-white/5 text-center text-sm text-slate-400">
+              ⏳ Menunggu admin mengirim nomor rekening...
+            </div>
+            {% endif %}
+
+            <!-- ✅ UPLOAD BUKTI PEMBAYARAN -->
+            {% if pending.nomor_rekening_admin and not pending.bukti_pembayaran_url %}
+            <form method="post" action="/satpam/kta/{{ pending.id }}/upload-bukti" enctype="multipart/form-data" class="mb-4">
+              <div class="p-4 rounded-2xl bg-white/5 border border-white/10">
+                <div class="font-bold mb-2">📤 Upload Bukti Pembayaran</div>
+                <input type="file" name="bukti_pembayaran" accept="image/*" required class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3">
+                <button type="submit" class="w-full mt-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-5 py-3">
+                  ✅ KIRIM BUKTI PEMBAYARAN
+                </button>
+              </div>
+            </form>
+            {% endif %}
+
+            {% if pending.bukti_pembayaran_url %}
+            <div class="mb-4 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20">
+              <div class="text-center">
+                <div class="font-bold text-emerald-300">✅ BUKTI PEMBAYARAN SUDAH DIKIRIM</div>
+                <div class="text-xs text-slate-400 mt-1">Menunggu verifikasi admin</div>
+                <a href="{{ pending.bukti_pembayaran_url }}" target="_blank" class="inline-block mt-3 px-4 py-2 rounded-xl bg-cyan-500/20 text-cyan-300 text-sm font-bold">
+                  👁️ Lihat Bukti Pembayaran
+                </a>
+              </div>
+            </div>
+            {% endif %}
+
+            {% if pending.status_pembayaran == 'terverifikasi' %}
+            <div class="mb-4 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20">
+              <div class="text-center">
+                <div class="font-bold text-emerald-300 text-lg">✅ PEMBAYARAN TERVERIFIKASI</div>
+                <div class="text-sm text-slate-400 mt-1">Pembayaran Anda sudah diverifikasi oleh Admin</div>
+              </div>
+            </div>
+            {% endif %}
+          {% endif %}
+
+          {% if pending.metode_pembayaran == 'langsung' %}
+          <div class="mb-4 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20">
+            <div class="text-center">
+              <div class="font-bold text-amber-300">📍 ANDA MEMILIH BAYAR LANGSUNG</div>
+              <div class="text-sm text-slate-400 mt-1">Silahkan datang langsung ke kantor Binmas pada jam kerja</div>
+            </div>
+          </div>
+          {% endif %}
+
         </div>
         {% else %}
         
@@ -6638,47 +7477,94 @@ def admin_kta_perpanjangan():
           <table class="w-full">
             <thead>
               <tr class="bg-white/5 border-b border-white/10">
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Tanggal</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Nama Satpam</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">No KTA</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Asal BUJP</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Alasan</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Status</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Aksi</th>
+                <th class="text-left px-4 py-3 text-sm font-bold text-slate-300">✅ Langkah</th>
+                <th class="text-left px-4 py-3 text-sm font-bold text-slate-300">Tanggal</th>
+                <th class="text-left px-4 py-3 text-sm font-bold text-slate-300">Nama Satpam</th>
+                <th class="text-left px-4 py-3 text-sm font-bold text-slate-300">No KTA</th>
+                <th class="text-left px-4 py-3 text-sm font-bold text-slate-300">Status Pembayaran</th>
+                <th class="text-left px-4 py-3 text-sm font-bold text-slate-300">Aksi Yang Perlu Dilakukan</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-white/5">
             {% for p in pengajuan %}
-              <tr class="hover:bg-white/5 transition">
-                <td class="px-6 py-4 text-sm">{{ p.tanggal_pengajuan }}</td>
-                <td class="px-6 py-4">
+              <tr class="hover:bg-white/5 transition 
+                {% if p.status == 'pending' and p.bukti_pembayaran_url and p.status_pembayaran == 'menunggu_verifikasi' %}
+                bg-emerald-500/10 border-l-4 border-l-emerald-500
+                {% elif p.status == 'pending' and p.metode_pembayaran == 'aplikasi' and not p.nomor_rekening_admin %}
+                bg-cyan-500/10 border-l-4 border-l-cyan-500
+                {% elif p.status == 'pending' %}
+                bg-amber-500/10 border-l-4 border-l-amber-500
+                {% elif p.status == 'disetujui' %}
+                bg-emerald-800/10 border-l-4 border-l-emerald-700
+                {% else %}
+                bg-slate-800/20
+                {% endif %}
+              ">
+                <td class="px-4 py-3">
+                  <div class="flex gap-1">
+                    <span class="w-8 h-8 rounded-full text-center flex items-center justify-center text-xs font-black {% if p.metode_pembayaran %}bg-emerald-500/20 text-emerald-300{% else %}bg-white/5 text-slate-500{% endif %}">1</span>
+                    <span class="w-8 h-8 rounded-full text-center flex items-center justify-center text-xs font-black {% if p.nomor_rekening_admin %}bg-emerald-500/20 text-emerald-300{% else %}bg-white/5 text-slate-500{% endif %}">2</span>
+                    <span class="w-8 h-8 rounded-full text-center flex items-center justify-center text-xs font-black {% if p.bukti_pembayaran_url %}bg-emerald-500/20 text-emerald-300{% else %}bg-white/5 text-slate-500{% endif %}">3</span>
+                    <span class="w-8 h-8 rounded-full text-center flex items-center justify-center text-xs font-black {% if p.status_pembayaran == 'terverifikasi' %}bg-emerald-500/20 text-emerald-300{% else %}bg-white/5 text-slate-500{% endif %}">4</span>
+                    <span class="w-8 h-8 rounded-full text-center flex items-center justify-center text-xs font-black {% if p.status == 'disetujui' %}bg-emerald-500/20 text-emerald-300{% else %}bg-white/5 text-slate-500{% endif %}">5</span>
+                  </div>
+                </td>
+                <td class="px-4 py-3 text-sm">{{ p.tanggal_pengajuan.split(' ')[0] }}</td>
+                <td class="px-4 py-3">
                   <div class="font-bold">{{ p.full_name }}</div>
                   <div class="text-xs text-slate-500">{{ p.no_hp or '-' }}</div>
                 </td>
-                <td class="px-6 py-4 text-cyan-300 font-mono">{{ p.no_kta_lama }}</td>
-                <td class="px-6 py-4 text-amber-300 text-sm">{{ p.nama_bujp or 'Umum' }}</td>
-                <td class="px-6 py-4 text-sm">{{ p.alasan_perpanjangan }}</td>
-                <td class="px-6 py-4">
-                  {% if p.status == 'pending' %}
-                  <span class="inline-block px-3 py-1 rounded-full bg-amber-500/20 text-amber-400 text-xs font-bold">⏳ Pending</span>
-                  {% elif p.status == 'disetujui' %}
-                  <span class="inline-block px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold">✅ Disetujui</span>
+                <td class="px-4 py-3 text-cyan-300 font-mono">{{ p.no_kta_lama }}</td>
+                <td class="px-4 py-3">
+                  {% if p.status_pembayaran == 'terverifikasi' %}
+                  <span class="inline-block px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold">✅ SUDAH DIBAYAR</span>
+                  {% elif p.status_pembayaran == 'menunggu_verifikasi' %}
+                  <span class="inline-block px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-300 text-xs font-bold animate-pulse">⏳ BUKTI DIKIRIM - PERLU VERIFIKASI</span>
+                  {% elif p.metode_pembayaran == 'aplikasi' and not p.nomor_rekening_admin %}
+                  <span class="inline-block px-3 py-1 rounded-full bg-cyan-500/20 text-cyan-400 text-xs font-bold animate-pulse">💳 PERLU KIRIM NO REKENING</span>
+                  {% elif p.metode_pembayaran == 'langsung' %}
+                  <span class="inline-block px-3 py-1 rounded-full bg-amber-500/20 text-amber-400 text-xs font-bold">📍 BAYAR LANGSUNG</span>
                   {% else %}
-                  <span class="inline-block px-3 py-1 rounded-full bg-red-500/20 text-red-400 text-xs font-bold">❌ Ditolak</span>
+                  <span class="inline-block px-3 py-1 rounded-full bg-white/5 text-slate-400 text-xs font-bold">⏳ BELUM PILIH METODE</span>
                   {% endif %}
                 </td>
-                <td class="px-6 py-4">
+                <td class="px-4 py-3">
                   {% if p.status == 'pending' %}
-                  <div class="flex gap-2">
+                  <div class="flex flex-wrap gap-2">
+                    
+                    {% if p.metode_pembayaran == 'aplikasi' and not p.nomor_rekening_admin %}
+                    <button onclick="kirimRekening({{ p.id }})" class="px-4 py-2 rounded-xl bg-cyan-500 text-slate-950 text-xs font-bold hover:bg-cyan-400">
+                      👉 KIRIM NO REKENING
+                    </button>
+                    {% endif %}
+                    
+                    {% if p.bukti_pembayaran_url and p.status_pembayaran == 'menunggu_verifikasi' %}
+                    <button onclick="verifikasiPembayaran({{ p.id }}, '{{ p.bukti_pembayaran_url }}')" class="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 text-xs font-bold hover:bg-emerald-400 animate-pulse">
+                      👉 VERIFIKASI BUKTI BAYAR
+                    </button>
+                    {% endif %}
+                    
+                    {% if p.status_pembayaran == 'terverifikasi' %}
+                    <button onclick="prosesPengajuan({{ p.id }}, {{ p.user_id }}, 'setujui')" class="px-4 py-2 rounded-xl bg-violet-500 text-slate-950 text-xs font-bold hover:bg-violet-400">
+                      ✅ SETUJUI & TERBITKAN KTA BARU
+                    </button>
+                    {% endif %}
+                    
+                    {% if not p.status_pembayaran or p.status_pembayaran == 'pending' %}
                     <button onclick="prosesPengajuan({{ p.id }}, {{ p.user_id }}, 'setujui')" class="px-3 py-2 rounded-xl bg-emerald-500/20 text-emerald-400 text-xs font-bold hover:bg-emerald-500/30">
                       ✅ Setujui
                     </button>
                     <button onclick="prosesPengajuan({{ p.id }}, {{ p.user_id }}, 'tolak')" class="px-3 py-2 rounded-xl bg-red-500/20 text-red-400 text-xs font-bold hover:bg-red-500/30">
                       ❌ Tolak
                     </button>
+                    {% endif %}
                   </div>
                   {% else %}
-                  <span class="text-xs text-slate-500">Sudah diproses</span>
+                    {% if p.status == 'disetujui' %}
+                    <span class="text-emerald-400 font-bold text-sm">✅ SUDAH SELESAI</span>
+                    {% else %}
+                    <span class="text-red-400 font-bold text-sm">❌ DITOLAK</span>
+                    {% endif %}
                   {% endif %}
                 </td>
               </tr>
@@ -6728,8 +7614,100 @@ def admin_kta_perpanjangan():
     function hideProsesModal() {
         document.getElementById('prosesModal').classList.add('hidden');
     }
+
+    function kirimRekening(pengajuanId) {
+        document.getElementById('kirimRekeningId').value = pengajuanId;
+        document.getElementById('formKirimRekening').action = '/admin/kta/' + pengajuanId + '/kirim-rekening';
+        document.getElementById('kirimRekeningModal').classList.remove('hidden');
+    }
+
+    function hideKirimRekeningModal() {
+        document.getElementById('kirimRekeningModal').classList.add('hidden');
+    }
+
+    function verifikasiPembayaran(pengajuanId, buktiUrl) {
+        document.getElementById('verifikasiPembayaranId').value = pengajuanId;
+        document.getElementById('formVerifikasiPembayaran').action = '/admin/kta/' + pengajuanId + '/verifikasi-pembayaran';
+        
+        // ✅ Tampilkan foto bukti pembayaran dengan layout yang bagus
+        const buktiContainer = document.getElementById('buktiPembayaranContainer');
+        const buktiImage = document.getElementById('buktiPembayaranImage');
+        const buktiLink = document.getElementById('buktiPembayaranLink');
+        
+        if (buktiUrl && buktiUrl.trim() !== '') {
+            buktiImage.src = buktiUrl;
+            buktiLink.href = buktiUrl;
+            buktiContainer.classList.remove('hidden');
+        } else {
+            buktiContainer.classList.add('hidden');
+        }
+        
+        document.getElementById('verifikasiPembayaranModal').classList.remove('hidden');
+    }
+
+    function hideVerifikasiPembayaranModal() {
+        document.getElementById('verifikasiPembayaranModal').classList.add('hidden');
+    }
     </script>
     
+    <!-- MODAL KIRIM NO REKENING -->
+    <div id="kirimRekeningModal" class="fixed inset-0 bg-black/80 z-50 hidden flex items-center justify-center p-4">
+        <div class="glass rounded-3xl p-6 w-full max-w-lg">
+            <h2 class="text-2xl font-bold mb-4">💳 Kirim Nomor Rekening</h2>
+            <form method="post" id="formKirimRekening" action="" class="space-y-4">
+                <input type="hidden" name="pengajuanId" id="kirimRekeningId">
+                
+                <div>
+                    <label class="text-sm text-slate-400 block mb-1">Nomor Rekening Resmi</label>
+                    <input name="nomor_rekening" value="{{ NOMOR_REKENING_DEFAULT }}" class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+                </div>
+                
+                <div class="flex gap-3 mt-6">
+                    <button type="button" onclick="hideKirimRekeningModal()" class="flex-1 bg-slate-500/20 text-slate-300 px-6 py-3 rounded-2xl font-bold">Batal</button>
+                    <button type="submit" class="flex-1 bg-cyan-500 text-slate-950 px-6 py-3 rounded-2xl font-bold">✅ Kirim Rekening</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL VERIFIKASI PEMBAYARAN -->
+    <div id="verifikasiPembayaranModal" class="fixed inset-0 bg-black/80 z-50 hidden flex items-center justify-center p-4">
+        <div class="glass rounded-3xl p-6 w-full max-w-lg max-h-[95vh] overflow-auto">
+            <h2 class="text-2xl font-bold mb-4">✅ Verifikasi Pembayaran</h2>
+            
+            <!-- ✅ Container Foto Bukti Pembayaran -->
+            <div id="buktiPembayaranContainer" class="hidden space-y-2 mb-4">
+                <h3 class="font-bold text-sm text-slate-300">📸 Bukti Pembayaran:</h3>
+                <div class="rounded-2xl overflow-hidden border border-white/10 bg-black/50 max-h-80">
+                    <img id="buktiPembayaranImage" src="" alt="Bukti Pembayaran" class="w-full h-auto object-contain max-h-80">
+                </div>
+                <a id="buktiPembayaranLink" href="" target="_blank" class="text-xs text-cyan-400 hover:text-cyan-300">🔗 Buka gambar di tab baru</a>
+            </div>
+            
+            <form method="post" id="formVerifikasiPembayaran" action="" class="space-y-4">
+                <input type="hidden" name="pengajuanId" id="verifikasiPembayaranId">
+                
+                <div>
+                    <label class="text-sm text-slate-400 block mb-1">Status Verifikasi</label>
+                    <select name="status" class="w-full rounded-2xl bg-slate-900 border border-white/10 px-4 py-3 outline-none">
+                        <option value="terverifikasi">✅ TERVERIFIKASI (Pembayaran Benar)</option>
+                        <option value="ditolak">❌ DITOLAK (Pembayaran Salah/Tidak Sesuai)</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="text-sm text-slate-400 block mb-1">Catatan Verifikasi (Opsional)</label>
+                    <textarea name="catatan" rows="2" class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none"></textarea>
+                </div>
+                
+                <div class="flex gap-3 mt-6">
+                    <button type="button" onclick="hideVerifikasiPembayaranModal()" class="flex-1 bg-slate-500/20 text-slate-300 px-6 py-3 rounded-2xl font-bold">Batal</button>
+                    <button type="submit" class="flex-1 bg-emerald-500 text-slate-950 px-6 py-3 rounded-2xl font-bold">✅ Simpan Verifikasi</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- MODAL PROSES SETUJUI PENGAJUAN -->
     <div id="prosesModal" class="fixed inset-0 bg-black/80 z-50 hidden flex items-center justify-center p-4">
         <div class="glass rounded-3xl p-6 w-full max-w-lg">
