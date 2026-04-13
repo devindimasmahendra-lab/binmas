@@ -31,6 +31,28 @@ PBKDF2_ITERATIONS = 260000
 DEFAULT_RESET_PASSWORD = "binmas@123"
 ROLES = ("anggota", "direktur_binmas", "admin", "satpam", "admin_bujp")
 
+# ✅ [FIX] Timezone Indonesia (WIB UTC+7) — dipakai untuk tampilan waktu lokal
+from datetime import timezone as _tz
+WIB = _tz(timedelta(hours=7))
+
+def now_wib() -> datetime:
+    """Waktu sekarang dalam zona waktu WIB (UTC+7)."""
+    return datetime.now(WIB)
+
+def now_str() -> str:
+    """Timestamp UTC untuk disimpan ke database."""
+    return datetime.now(_tz.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+def wib_str(dt_utc_str: str) -> str:
+    """Konversi string UTC (dari DB) ke tampilan WIB. Contoh: '2025-04-11 05:30:00' -> '11/04/2025 12:30 WIB'."""
+    try:
+        dt = datetime.strptime(dt_utc_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=_tz.utc)
+        dt_wib = dt.astimezone(WIB)
+        return dt_wib.strftime("%d/%m/%Y %H:%M WIB")
+    except Exception:
+        return dt_utc_str
+
+
 app = Flask(__name__)
 app.config.update(
     SECRET_KEY=os.environ.get('SECRET_KEY', secrets.token_hex(32)),
@@ -55,56 +77,49 @@ limiter = Limiter(
 # Cukup untuk 200 user dari jaringan kantor yang NAT IP nya sama
 login_limiter = limiter.shared_limit("12 per 5 minute", scope="login")
 
-# ✅ PENYIMPANAN LOG GAGAL LOGIN UNTUK DETEKSI BRUTE FORCE
+# ✅ [FIX] PENYIMPANAN LOG GAGAL LOGIN — thread-safe dengan Lock
 LOGIN_FAILURES = {}
+LOGIN_FAILURES_LOCK = Lock()  # Lock untuk thread-safety
 FAILURE_BLOCK_THRESHOLD = 12
 BLOCK_DURATION_MINUTES = 45
 
+
 def check_brute_force(ip_address):
-    """
-    ✅ CEK APAKAH IP INI TERBLOKIR KARENA BRUTE FORCE
-    Mengembalikan True jika boleh lanjut, False jika diblokir
-    """
+    """✅ [FIX] CEK APAKAH IP INI TERBLOKIR — thread-safe"""
     now = datetime.now()
-    
-    # Jika IP tidak ada di daftar failure, lanjutkan
-    if ip_address not in LOGIN_FAILURES:
-        return True
-        
-    data = LOGIN_FAILURES[ip_address]
-    count = data.get('count', 0)
-    last_failure = data.get('last_failure')
-    
-    # Jika sudah di atas ambang batas
-    if count >= FAILURE_BLOCK_THRESHOLD:
-        # Cek apakah waktu blokir sudah lewat
-        elapsed = now - last_failure
-        if elapsed < timedelta(minutes=BLOCK_DURATION_MINUTES):
-            return False
-        else:
-            # Reset counter jika sudah lewat waktu blokir
-            LOGIN_FAILURES.pop(ip_address, None)
+    with LOGIN_FAILURES_LOCK:
+        data = LOGIN_FAILURES.get(ip_address)
+        if not data:
             return True
-    
+        count = data.get('count', 0)
+        last_failure = data.get('last_failure')
+        if count >= FAILURE_BLOCK_THRESHOLD:
+            elapsed = now - last_failure
+            if elapsed < timedelta(minutes=BLOCK_DURATION_MINUTES):
+                return False
+            else:
+                LOGIN_FAILURES.pop(ip_address, None)
+                return True
     return True
 
+
 def record_login_failure(ip_address):
-    """ ✅ CATAT KEGAGALAN LOGIN """
+    """✅ [FIX] CATAT KEGAGALAN LOGIN — thread-safe"""
     now = datetime.now()
-    if ip_address not in LOGIN_FAILURES:
-        LOGIN_FAILURES[ip_address] = {
-            'count': 0,
-            'last_failure': now
-        }
-    
-    LOGIN_FAILURES[ip_address]['count'] += 1
-    LOGIN_FAILURES[ip_address]['last_failure'] = now
-    
-    return LOGIN_FAILURES[ip_address]['count']
+    with LOGIN_FAILURES_LOCK:
+        if ip_address not in LOGIN_FAILURES:
+            LOGIN_FAILURES[ip_address] = {'count': 0, 'last_failure': now}
+        LOGIN_FAILURES[ip_address]['count'] += 1
+        LOGIN_FAILURES[ip_address]['last_failure'] = now
+        return LOGIN_FAILURES[ip_address]['count']
+
+
 
 def reset_login_failures(ip_address):
-    """ ✅ RESET COUNTER KETIKA LOGIN BERHASIL """
-    LOGIN_FAILURES.pop(ip_address, None)
+    """✅ [FIX] RESET COUNTER KETIKA LOGIN BERHASIL — thread-safe"""
+    with LOGIN_FAILURES_LOCK:
+        LOGIN_FAILURES.pop(ip_address, None)
+
 
 # Serve static files
 @app.route('/static/<path:filename>')
@@ -124,15 +139,29 @@ MONITOR_SOCKETS = set()
 SATPAM_SOCKETS = {}  # user_id -> set(websocket)
 
 
-def now_str():
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
+
+
+def row_get(row, key, default=None):
+    """[FIX] Helper aman untuk ambil nilai dari sqlite3.Row dengan default, tanpa error!
+    Menggantikan row.get() yang TIDAK ADA di sqlite3.Row - INI PENYEBAB UTAMA ERROR!
+    """
+    try:
+        return row[key] if row and key in row.keys() else default
+    except (KeyError, IndexError):
+        return default
 
 def get_db():
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH)
         g.db.row_factory = sqlite3.Row
+        # ✅ [FIX] Aktifkan WAL untuk performa multi-user + enforce FK
+        g.db.execute("PRAGMA journal_mode=WAL")
+        g.db.execute("PRAGMA foreign_keys=ON")
+        g.db.execute("PRAGMA synchronous=NORMAL")
+        g.db.execute("PRAGMA cache_size=-32000")   # ~32 MB cache
     return g.db
+
 
 
 @app.teardown_appcontext
@@ -266,6 +295,7 @@ def init_db():
         FOREIGN KEY (actor_user_id) REFERENCES users(id)
     );
 
+ 
     CREATE TABLE IF NOT EXISTS absensi (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -277,9 +307,49 @@ def init_db():
         akurasi REAL,
         status TEXT,
         lokasi TEXT,
+        sesi_id INTEGER DEFAULT NULL,
         created_at TEXT NOT NULL,
-        FOREIGN KEY (user_id) REFERENCES users(id)
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (sesi_id) REFERENCES absensi_sesi(id)
     );
+
+    -- ✅ [NEW] Sesi absensi yang dikontrol oleh admin
+    CREATE TABLE IF NOT EXISTS absensi_sesi (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nama_sesi TEXT NOT NULL,
+        tanggal TEXT NOT NULL,
+        jam_buka_masuk TEXT NOT NULL DEFAULT '07:00',
+        jam_tutup_masuk TEXT NOT NULL DEFAULT '09:00',
+        jam_buka_keluar TEXT DEFAULT '16:00',
+        jam_tutup_keluar TEXT DEFAULT '23:59',
+        batas_terlambat TEXT DEFAULT '08:00',
+        status TEXT NOT NULL DEFAULT 'draft'
+            CHECK(status IN ('draft','aktif','selesai','ditutup')),
+        geofence_wajib INTEGER DEFAULT 0,
+        radius_meter INTEGER DEFAULT 200,
+        bujp_id INTEGER DEFAULT NULL,
+        keterangan TEXT DEFAULT '',
+        dibuat_oleh INTEGER NOT NULL,
+        diaktifkan_oleh INTEGER DEFAULT NULL,
+        diaktifkan_at TEXT DEFAULT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (dibuat_oleh) REFERENCES users(id),
+        FOREIGN KEY (diaktifkan_oleh) REFERENCES users(id),
+        FOREIGN KEY (bujp_id) REFERENCES bujp(id)
+    );
+
+    -- ✅ [NEW] Konfigurasi absensi global (bisa diubah admin)
+    CREATE TABLE IF NOT EXISTS absensi_config (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        config_key TEXT NOT NULL UNIQUE,
+        config_value TEXT NOT NULL,
+        updated_by INTEGER,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (updated_by) REFERENCES users(id)
+    );
+
+
 
     CREATE TABLE IF NOT EXISTS emergency_reports (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -348,6 +418,75 @@ def init_db():
     except:
         pass
 
+    # ✅ [NEW] MIGRASI TABEL ABSENSI — tambah kolom sesi_id
+    try:
+        cursor = db.execute("PRAGMA table_info(absensi)")
+        absensi_cols = [row[1] for row in cursor.fetchall()]
+        if 'sesi_id' not in absensi_cols:
+            db.execute("ALTER TABLE absensi ADD COLUMN sesi_id INTEGER DEFAULT NULL")
+            db.commit()
+    except Exception:
+        pass
+
+    # ✅ [NEW] Buat tabel absensi_sesi jika belum ada
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS absensi_sesi (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nama_sesi TEXT NOT NULL,
+                tanggal TEXT NOT NULL,
+                jam_buka_masuk TEXT NOT NULL DEFAULT '07:00',
+                jam_tutup_masuk TEXT NOT NULL DEFAULT '09:00',
+                jam_buka_keluar TEXT DEFAULT '16:00',
+                jam_tutup_keluar TEXT DEFAULT '23:59',
+                batas_terlambat TEXT DEFAULT '08:00',
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK(status IN ('draft','aktif','selesai','ditutup')),
+                geofence_wajib INTEGER DEFAULT 0,
+                radius_meter INTEGER DEFAULT 200,
+                bujp_id INTEGER DEFAULT NULL,
+                keterangan TEXT DEFAULT '',
+                dibuat_oleh INTEGER NOT NULL,
+                diaktifkan_oleh INTEGER DEFAULT NULL,
+                diaktifkan_at TEXT DEFAULT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        db.commit()
+    except Exception:
+        pass
+
+    # ✅ [NEW] Buat tabel absensi_config jika belum ada
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS absensi_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                config_key TEXT NOT NULL UNIQUE,
+                config_value TEXT NOT NULL,
+                updated_by INTEGER,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        db.commit()
+        # Insert config defaults
+        for key, val in [
+            ("absensi_mode", "bebas"),
+            ("geofence_wajib_global", "0"),
+            ("radius_absen_default", "200"),
+        ]:
+            try:
+                db.execute(
+                    "INSERT OR IGNORE INTO absensi_config (config_key, config_value, updated_at) VALUES (?, ?, ?)",
+                    (key, val, now_str())
+                )
+            except Exception:
+                pass
+        db.commit()
+    except Exception:
+        pass
+
+
     # MIGRASI TABEL USERS - TAMBAHKAN KOLOM bujp_id JIKA BELUM ADA
     try:
         cursor = db.execute("PRAGMA table_info(users)")
@@ -383,15 +522,23 @@ def init_db():
     except:
         pass
 
+    # ✅ [FIX] Password diambil dari environment variable, bukan hardcoded
+    # Set via: export ADMIN_PASS=xxx DIREKTUR_PASS=xxx SATPAM_PASS=xxx
     defaults = [
-        ("admin", "Administrator", "admin", "admin123"),
-        ("direktur", "Direktur Binmas", "direktur_binmas", "director123"),
-        ("satpam1", "Satpam Utama", "satpam", "satpam123"),
-        ("anggota1", "Anggota Default", "anggota", "anggota123"),
+        ("admin", "Administrator", "admin",
+            os.environ.get("ADMIN_PASS", secrets.token_urlsafe(12))),
+        ("direktur", "Direktur Binmas", "direktur_binmas",
+            os.environ.get("DIREKTUR_PASS", secrets.token_urlsafe(12))),
+        ("satpam1", "Satpam Utama", "satpam",
+            os.environ.get("SATPAM_DEFAULT_PASS", secrets.token_urlsafe(12))),
+        ("anggota1", "Anggota Default", "anggota",
+            os.environ.get("ANGGOTA_DEFAULT_PASS", secrets.token_urlsafe(12))),
     ]
+    # ✅ Tampilkan password hanya jika akun baru (bukan update) dan insert sekaligus
     for username, full_name, role, password in defaults:
         exists = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
         if not exists:
+            print(f"  [INIT] Akun '{username}' dibuat, password: {password}")
             ts = now_str()
             db.execute(
                 "INSERT INTO users (username, full_name, role, password_hash, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
@@ -486,6 +633,7 @@ def nav_html(user):
         except:
             emergency_pending_count = 0
 
+
     if user["role"] == "admin":
         items = [
             (url_for("admin_dashboard"), "Admin"),
@@ -494,9 +642,13 @@ def nav_html(user):
             (url_for("monitor_map"), "Map Monitor"),
             (url_for("emergency_alert_map"), "🚨 Maps Alert", emergency_pending_count),
             (url_for("admin_emergency_reports"), "📋 Daftar Laporan Darurat"),
+            (url_for("admin_absensi_sesi"), "📅 Kelola Absensi"),   # ✅ [NEW]
+            (url_for("admin_absensi_rekap"), "📊 Rekap Absensi"),   # ✅ [NEW]
             (url_for("change_password"), "Ganti Password"),
             (url_for("logout"), "Logout"),
         ]
+
+
     elif user["role"] == "direktur_binmas":
         items = [
             (url_for("monitor_map"), "Map Satpam"),
@@ -559,7 +711,15 @@ BASE_TEMPLATE = """
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <!-- ✅ [NEW] Leaflet.heat untuk heatmap & Leaflet.markercluster untuk cluster -->
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+
   <style>
     :root { color-scheme: dark; }
     body {
@@ -753,6 +913,56 @@ BASE_TEMPLATE = """
         ticking = true;
       }
     });
+
+    // ✅ [NEW] Toggle Heatmap — tampilkan kepadatan keberadaan satpam
+    let heatLayer = null;
+    let heatVisible = false;
+
+    function toggleHeatmap() {
+        if (!window._mapInstance) return;
+        if (heatVisible && heatLayer) {
+            window._mapInstance.removeLayer(heatLayer);
+            heatVisible = false;
+            document.getElementById('btnHeatmap').textContent = '🔥 Tampilkan Heatmap';
+        } else {
+            const pts = (window._satpamSnapshot || []).map(s => [s.lat, s.lng, 0.8]);
+            if (pts.length === 0) { alert('Tidak ada data lokasi satpam.'); return; }
+            heatLayer = L.heatLayer(pts, {radius: 35, blur: 25, maxZoom: 17}).addTo(window._mapInstance);
+            heatVisible = true;
+            document.getElementById('btnHeatmap').textContent = '🔥 Sembunyikan Heatmap';
+        }
+    }
+
+    // ✅ [NEW] Trail / rute pergerakan satpam hari ini
+    let trailLayer = null;
+    async function tampilkanTrail(userId, namaUser) {
+        if (!window._mapInstance) return;
+        if (trailLayer) { window._mapInstance.removeLayer(trailLayer); trailLayer = null; }
+        try {
+            const res = await fetch(`/api/satpam/${userId}/trail`);
+            const data = await res.json();
+            if (!data.trail || data.trail.length < 2) {
+                alert(`${namaUser}: Belum ada riwayat pergerakan hari ini.`);
+                return;
+            }
+            const latlngs = data.trail.map(p => [p.lat, p.lng]);
+            trailLayer = L.layerGroup();
+            // Garis rute
+            L.polyline(latlngs, {color: '#06b6d4', weight: 3, opacity: 0.8, dashArray: '6 4'})
+             .addTo(trailLayer);
+            // Titik-titik dengan waktu
+            data.trail.forEach((p, idx) => {
+                L.circleMarker([p.lat, p.lng], {radius: 4, color: '#06b6d4', fillOpacity: 1})
+                 .bindTooltip(`${namaUser}<br>${p.created_at}`, {permanent: false})
+                 .addTo(trailLayer);
+            });
+            trailLayer.addTo(window._mapInstance);
+            window._mapInstance.fitBounds(L.polyline(latlngs).getBounds().pad(0.2));
+        } catch(e) {
+            alert('Gagal memuat trail: ' + e.message);
+        }
+    }
+
     
     // Service Worker
     if ('serviceWorker' in navigator) {
@@ -790,22 +1000,23 @@ def get_geofences_data():
 
 
 def point_in_polygon(lat, lng, polygon):
+    """Ray-casting algorithm untuk mengecek apakah titik berada di dalam polygon."""
     inside = False
-    pts = [(coord[1], coord[0]) for coord in polygon]
-    j = len(pts) - 1
-    for i in range(len(pts)):
+    pts = [(coord[1], coord[0]) for coord in polygon]  # [lat, lng]
+    n = len(pts)
+    j = n - 1
+    for i in range(n):
         yi, xi = pts[i]
         yj, xj = pts[j]
-        denominator = xj - xi
-        if abs(denominator) < 1e-12:
-            # Vertikal line, skip perhitungan pembagian
-            j = i
-            continue
-        intersects = ((xi > lng) != (xj > lng)) and (lat < (yj - yi) * (lng - xi) / denominator + yi)
-        if intersects:
-            inside = not inside
+        # ✅ [FIX] Cek crossing langsung tanpa variabel terpisah agar tidak ada state lama
+        if ((xi > lng) != (xj > lng)):
+            denom = xj - xi
+            if abs(denom) > 1e-12:   # hindari pembagian nol
+                if lat < (yj - yi) * (lng - xi) / denom + yi:
+                    inside = not inside
         j = i
     return inside
+
 
 
 def geofence_hits(lat, lng):
@@ -1803,7 +2014,8 @@ def bujp_dashboard():
     db = get_db()
     
     # Statistik BUJP
-    total_anggota = db.execute("SELECT COUNT(*) FROM users WHERE role='anggota' OR role='satpam' AND is_active=1").fetchone()[0]
+        # ✅ [FIX] Pakai IN() dan tambah kurung untuk operator precedence yang benar
+    total_anggota = db.execute("SELECT COUNT(*) FROM users WHERE role IN ('anggota','satpam') AND is_active=1").fetchone()[0]
     total_kta_terbit = db.execute("SELECT COUNT(*) FROM users WHERE no_kta != '' AND is_active=1").fetchone()[0]
     total_satpam_aktif = db.execute("SELECT COUNT(*) FROM users WHERE role='satpam' AND is_active=1").fetchone()[0]
     verified_count = db.execute("SELECT COUNT(*) FROM users WHERE role IN ('anggota','satpam') AND bujp_id = ? AND bujp_verified = 1", (user['bujp_id'],)).fetchone()[0]
@@ -2457,8 +2669,8 @@ def satpam_page():
       
         <a href="{{ url_for('satpam_absen') }}" class="glass rounded-3xl p-6 text-center hover:bg-cyan-500/10 hover:border-cyan-500/20 transition">
           <div class="text-4xl mb-3">📅</div>
-          <div class="font-bold text-lg">Absen Harian</div>
-          <div class="text-xs text-slate-400 mt-1">Check-in & Check-out</div>
+          <div class="font-bold text-lg">ABSENSI</div>
+          <div class="text-xs text-slate-400 mt-1">Absen Masuk & Pulang</div>
         </a>
         
         <a href="{{ url_for('satpam_profile') }}" class="glass rounded-3xl p-6 text-center hover:bg-cyan-500/10 hover:border-cyan-500/20 transition">
@@ -3680,17 +3892,13 @@ def satpam_absen():
             </div>
           </div>
           
-          <div class="flex gap-3">
-            {% if bisa_absen_masuk %}
-            <button id="btnAbsenMasuk" class="flex-1 rounded-2xl bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-black px-4 py-4 transition">
-              ✅ Absen MASUK Sekarang
+          <div class="grid grid-cols-2 gap-4">
+            <button id="btnAbsenMasuk" onclick="kirimAbsen('MASUK')" class="rounded-2xl bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-black px-4 py-5 transition text-lg">
+              ✅<br>ABSEN DATANG
             </button>
-            {% endif %}
-            {% if bisa_absen_keluar %}
-            <button id="btnAbsenPulang" class="flex-1 rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-400 hover:to-red-500 text-white font-black px-4 py-4 transition">
-              🏠 Absen KELUAR Sekarang
+            <button id="btnAbsenPulang" onclick="kirimAbsen('KELUAR')" class="rounded-2xl bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-400 hover:to-red-500 text-white font-black px-4 py-5 transition text-lg">
+              🏠<br>ABSEN PULANG
             </button>
-            {% endif %}
           </div>
         
         <div id="statusMessage" class="mt-4 p-3 rounded-2xl hidden text-center text-sm"></div>
@@ -3786,8 +3994,11 @@ def satpam_absen():
       }
       
       if (btnPulang) {
-        btnPulang.addEventListener('click', () => kirimAbsen('pulang'));
+        // ✅ [FIX] Kirim 'keluar' bukan 'pulang' — konsisten dengan API
+        btnPulang.addEventListener('click', () => kirimAbsen('keluar'));
       }
+      
+
     });
     </script>
     """, 
@@ -3807,61 +4018,816 @@ def satpam_absen():
 def api_absen():
     user = current_user()
     data = request.get_json(silent=True) or {}
-    
+
     try:
         lat = float(data.get("lat"))
         lng = float(data.get("lng"))
         accuracy = float(data.get("accuracy")) if data.get("accuracy") else None
         tipe = data.get("tipe")
-        
-        if tipe not in ('masuk', 'pulang'):
-            return jsonify({"ok": False, "error": "Tipe absen tidak valid"}), 400
-            
+
+        # ✅ [FIX] Konsisten: terima 'masuk'/'keluar'
+        if tipe not in ('masuk', 'keluar'):
+            return jsonify({"ok": False, "error": "Tipe absen tidak valid. Gunakan 'masuk' atau 'keluar'"}), 400
+
         if not (-90 <= lat <= 90 and -180 <= lng <= 180):
             return jsonify({"ok": False, "error": "Koordinat tidak valid"}), 400
-        
-        today = datetime.now().strftime("%Y-%m-%d")
-        waktu_sekarang = datetime.now().strftime("%H:%M:%S")
-        
+
         db = get_db()
-        
+        now_wib_dt = now_wib()
+        today      = now_wib_dt.strftime("%Y-%m-%d")
+        waktu_str  = now_wib_dt.strftime("%H:%M:%S")
+        jam_menit  = now_wib_dt.hour * 60 + now_wib_dt.minute
+
+        # ✅ [NEW] Cek mode absensi — jika mode='sesi', harus ada sesi aktif
+        config = get_absensi_config(db)
+        sesi_aktif = None
+        sesi_id = None
+
+        if config["absensi_mode"] == "sesi":
+            sesi_aktif = get_sesi_aktif(bujp_id=user["bujp_id"], db=db)
+            if not sesi_aktif:
+                return jsonify({
+                    "ok": False,
+                    "error": "❌ Absensi ditutup. Belum ada sesi absensi yang aktif hari ini. Hubungi Admin."
+                }), 403
+            sesi_id = sesi_aktif["id"]
+
+            # ✅ [NEW] Validasi jam absen sesuai sesi
+            if tipe == "masuk":
+                buka = sesi_aktif["jam_buka_masuk"]   # "07:00"
+                tutup = sesi_aktif["jam_tutup_masuk"]  # "09:00"
+            else:
+                buka = sesi_aktif["jam_buka_keluar"] or "16:00"
+                tutup = sesi_aktif["jam_tutup_keluar"] or "23:59"
+
+            buka_menit  = int(buka.split(":")[0]) * 60 + int(buka.split(":")[1])
+            tutup_menit = int(tutup.split(":")[0]) * 60 + int(tutup.split(":")[1])
+
+            if not (buka_menit <= jam_menit <= tutup_menit):
+                tipe_label = 'masuk' if tipe == 'masuk' else 'keluar'
+                return jsonify({
+                    "ok": False,
+                    "error": f"❌ Di luar jam absensi {tipe_label}. Jam absensi {tipe_label}: {buka} – {tutup}"
+                }), 403
+
+            # ✅ [NEW] Status keterlambatan berdasarkan batas_terlambat sesi
+            if tipe == "masuk":
+                batas = sesi_aktif["batas_terlambat"] or "08:00"
+                batas_menit = int(batas.split(":")[0]) * 60 + int(batas.split(":")[1])
+                if jam_menit > batas_menit:
+                    status = "Terlambat"
+                elif jam_menit <= buka_menit + 30:
+                    status = "Tepat Waktu"
+                else:
+                    status = "Normal"
+            else:
+                status = "Normal"
+        else:
+            # Mode bebas — status berdasarkan jam standar
+            tipe_db_temp = tipe
+            if tipe == 'masuk':
+                status = "Tepat Waktu" if jam_menit <= (7 * 60 + 30) else \
+                         "Terlambat" if jam_menit > (8 * 60) else "Normal"
+            else:
+                status = "Normal"
+
         tipe_db = 'MASUK' if tipe == 'masuk' else 'KELUAR'
-        jam_sekarang = datetime.now().hour * 60 + datetime.now().minute
-        status = "Tepat Waktu" if tipe == 'masuk' and jam_sekarang <= (7*60 + 30) else "Normal"
-        
-        # INSERT SATU BARIS PER ABSEN (MODE BARU - SETIAP ABSEN ADALAH RECORD BARU)
+
         db.execute("""
-            INSERT INTO absensi 
-            (user_id, tanggal, waktu, tipe, lat, lng, akurasi, status, lokasi, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO absensi
+            (user_id, tanggal, waktu, tipe, lat, lng, akurasi, status, lokasi, sesi_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            user['id'], 
-            today, 
-            waktu_sekarang, 
-            tipe_db, 
-            lat, 
-            lng, 
-            accuracy, 
-            status, 
-            json.dumps(geofence_hits(lat, lng)), 
-            now_str()
+            user['id'], today, waktu_str, tipe_db,
+            lat, lng, accuracy, status,
+            json.dumps(geofence_hits(lat, lng)),
+            sesi_id, now_str()
         ))
-        
         db.commit()
-        
-        # Masukkan lokasi absensi ke tabel locations agar muncul di map monitor
-        payload = persist_location(user['id'], lat, lng, accuracy, None, None, source="absensi")
-        payload['online'] = True
-        
-        # Langsung broadcast full snapshot agar semua map dan list terupdate total
+
+        persist_location(user['id'], lat, lng, accuracy, None, None, source="absensi")
         broadcast_presence()
-        
-        log_action(f"ABSEN_{tipe.upper()}", "absensi", None, f"lat={lat:.6f};lng={lng:.6f}")
-        
-        return jsonify({"ok": True})
-        
+        log_action(f"ABSEN_{tipe.upper()}", "absensi", sesi_id,
+                   f"lat={lat:.6f};lng={lng:.6f};status={status}")
+
+        return jsonify({"ok": True, "status": status, "waktu": waktu_str,
+                        "sesi": sesi_aktif['nama_sesi'] if sesi_aktif else None})
+
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
+
+
+
+
+# ==============================
+# ✅ [NEW] SISTEM ABSENSI ADMIN-CONTROLLED
+# ==============================
+
+def get_absensi_config(db=None):
+    """Ambil semua config absensi sebagai dict."""
+    if db is None:
+        db = get_db()
+    rows = db.execute("SELECT config_key, config_value FROM absensi_config").fetchall()
+    return {row["config_key"]: row["config_value"] for row in rows}
+
+
+def get_sesi_aktif(bujp_id=None, db=None):
+    """Ambil sesi absensi yang sedang aktif hari ini."""
+    if db is None:
+        db = get_db()
+    today = now_wib().strftime("%Y-%m-%d")
+    if bujp_id:
+        return db.execute("""
+            SELECT * FROM absensi_sesi
+            WHERE status = 'aktif' AND DATE(tanggal) = ?
+            AND (bujp_id IS NULL OR bujp_id = ?)
+            ORDER BY id DESC LIMIT 1
+        """, (today, bujp_id)).fetchone()
+    else:
+        return db.execute("""
+            SELECT * FROM absensi_sesi
+            WHERE status = 'aktif' AND DATE(tanggal) = ?
+            ORDER BY id DESC LIMIT 1
+        """, (today,)).fetchone()
+
+
+@app.route("/admin/absensi/sesi")
+@login_required
+@roles_required("admin")
+def admin_absensi_sesi():
+    user = current_user()
+    db = get_db()
+
+    # Ambil semua sesi 30 hari terakhir
+    sesi_list = db.execute("""
+        SELECT s.*, u.full_name AS dibuat_oleh_nama,
+               b.nama_bujp,
+               (SELECT COUNT(*) FROM absensi a WHERE a.sesi_id = s.id AND a.tipe='MASUK') AS total_masuk,
+               (SELECT COUNT(*) FROM absensi a WHERE a.sesi_id = s.id AND a.tipe='KELUAR') AS total_keluar
+        FROM absensi_sesi s
+        LEFT JOIN users u ON u.id = s.dibuat_oleh
+        LEFT JOIN bujp b ON b.id = s.bujp_id
+        ORDER BY s.id DESC
+        LIMIT 60
+    """).fetchall()
+
+    bujp_list = db.execute("SELECT id, nama_bujp FROM bujp WHERE is_active=1 ORDER BY nama_bujp").fetchall()
+    config = get_absensi_config(db)
+
+    body = render_template_string("""
+    <div class="mt-6 space-y-6">
+
+      <!-- Header -->
+      <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+          <h1 class="text-3xl font-black mb-1">📅 KELOLA SESI ABSENSI</h1>
+          <p class="text-slate-400">Buat dan kontrol sesi absensi satpam. Satpam hanya bisa absen ketika sesi aktif.</p>
+        </div>
+        <button onclick="document.getElementById('modalBuatSesi').classList.remove('hidden')"
+          class="px-6 py-3 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black transition">
+          ➕ BUAT SESI BARU
+        </button>
+      </div>
+
+      <!-- Config Card -->
+      <div class="glass rounded-3xl p-5">
+        <h2 class="text-lg font-bold mb-4">⚙️ Konfigurasi Absensi Global</h2>
+        <form method="post" action="/admin/absensi/config" class="grid md:grid-cols-3 gap-4">
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Mode Absensi</label>
+            <select name="absensi_mode" class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+              <option value="bebas" {% if config.get('absensi_mode')=='bebas' %}selected{% endif %}>Bebas (satpam absen kapan saja)</option>
+              <option value="sesi" {% if config.get('absensi_mode')=='sesi' %}selected{% endif %}>Sesi (hanya saat ada sesi aktif)</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Radius Absen Default (meter)</label>
+            <input type="number" name="radius_absen_default" value="{{ config.get('radius_absen_default','200') }}"
+              class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+          </div>
+          <div class="flex items-end">
+            <button class="w-full rounded-2xl bg-emerald-500 text-slate-950 font-bold px-4 py-3">
+              💾 Simpan Config
+            </button>
+          </div>
+        </form>
+        <div class="mt-3 text-xs text-slate-500">
+          Mode saat ini: <span class="font-bold text-cyan-300">{{ config.get('absensi_mode','bebas').upper() }}</span>
+          {% if config.get('absensi_mode') == 'sesi' %}
+          — Satpam HANYA bisa absen ketika ada sesi yang aktif hari ini.
+          {% else %}
+          — Satpam bisa absen kapan saja tanpa perlu sesi.
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Tabel Sesi -->
+      <div class="glass rounded-3xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-white/10 flex items-center justify-between">
+          <h2 class="text-xl font-bold">📋 Daftar Sesi Absensi</h2>
+          <span class="text-slate-400 text-sm">{{ sesi_list|length }} sesi ditampilkan</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full">
+            <thead>
+              <tr class="bg-white/5 border-b border-white/10 text-sm text-slate-300">
+                <th class="text-left px-5 py-3">Nama Sesi</th>
+                <th class="text-left px-5 py-3">Tanggal</th>
+                <th class="text-left px-5 py-3">Jam Masuk</th>
+                <th class="text-left px-5 py-3">Jam Keluar</th>
+                <th class="text-left px-5 py-3">BUJP</th>
+                <th class="text-left px-5 py-3">Status</th>
+                <th class="text-left px-5 py-3">Hadir</th>
+                <th class="text-left px-5 py-3">Aksi</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-white/5">
+            {% for s in sesi_list %}
+              <tr class="hover:bg-white/5 transition">
+                <td class="px-5 py-3 font-bold">{{ s.nama_sesi }}</td>
+                <td class="px-5 py-3 text-sm">{{ s.tanggal }}</td>
+                <td class="px-5 py-3 text-sm text-emerald-300">{{ s.jam_buka_masuk }}–{{ s.jam_tutup_masuk }}</td>
+                <td class="px-5 py-3 text-sm text-orange-300">{{ s.jam_buka_keluar or '-' }}–{{ s.jam_tutup_keluar or '-' }}</td>
+                <td class="px-5 py-3 text-sm text-amber-300">{{ s.nama_bujp or 'Semua BUJP' }}</td>
+                <td class="px-5 py-3">
+                  {% if s.status == 'aktif' %}
+                  <span class="px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold animate-pulse">🟢 AKTIF</span>
+                  {% elif s.status == 'draft' %}
+                  <span class="px-3 py-1 rounded-full bg-amber-500/20 text-amber-400 text-xs font-bold">📝 Draft</span>
+                  {% elif s.status == 'selesai' %}
+                  <span class="px-3 py-1 rounded-full bg-slate-500/20 text-slate-300 text-xs font-bold">✅ Selesai</span>
+                  {% else %}
+                  <span class="px-3 py-1 rounded-full bg-red-500/20 text-red-400 text-xs font-bold">🔴 Ditutup</span>
+                  {% endif %}
+                </td>
+                <td class="px-5 py-3 text-sm">
+                  <span class="text-emerald-400">↑{{ s.total_masuk }}</span> /
+                  <span class="text-orange-400">↓{{ s.total_keluar }}</span>
+                </td>
+                <td class="px-5 py-3">
+                  <div class="flex gap-2">
+                    {% if s.status == 'draft' %}
+                    <form method="post" action="/admin/absensi/sesi/{{ s.id }}/aktifkan">
+                      <button class="px-3 py-1 rounded-xl bg-emerald-500/20 text-emerald-400 text-xs font-bold">▶ Aktifkan</button>
+                    </form>
+                    {% endif %}
+                    {% if s.status == 'aktif' %}
+                    <form method="post" action="/admin/absensi/sesi/{{ s.id }}/tutup">
+                      <button class="px-3 py-1 rounded-xl bg-red-500/20 text-red-400 text-xs font-bold">⏹ Tutup</button>
+                    </form>
+                    {% endif %}
+                    <a href="/admin/absensi/sesi/{{ s.id }}/detail"
+                      class="px-3 py-1 rounded-xl bg-cyan-500/20 text-cyan-400 text-xs font-bold">👁 Detail</a>
+                  </div>
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="8" class="py-12 text-center text-slate-400">
+                  <div class="text-4xl mb-3">📅</div>
+                  <div>Belum ada sesi absensi. Klik "Buat Sesi Baru" untuk memulai.</div>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL BUAT SESI -->
+    <div id="modalBuatSesi" class="fixed inset-0 bg-black/80 z-50 hidden flex items-center justify-center p-4">
+      <div class="glass rounded-3xl p-6 w-full max-w-xl max-h-[95vh] overflow-y-auto">
+        <div class="flex justify-between items-center mb-5">
+          <h2 class="text-2xl font-black">➕ Buat Sesi Absensi Baru</h2>
+          <button onclick="document.getElementById('modalBuatSesi').classList.add('hidden')"
+            class="w-10 h-10 rounded-2xl bg-white/5 hover:bg-white/10 flex items-center justify-center">✕</button>
+        </div>
+        <form method="post" action="/admin/absensi/sesi/buat" class="space-y-4">
+          <div>
+            <label class="text-sm text-slate-400 block mb-1">Nama Sesi</label>
+            <input name="nama_sesi" required placeholder="cth: Shift Pagi Senin 14 April"
+              class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none focus:ring-2 focus:ring-cyan-500">
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm text-slate-400 block mb-1">Tanggal Sesi</label>
+              <input name="tanggal" type="date" required
+                class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none focus:ring-2 focus:ring-cyan-500">
+            </div>
+            <div>
+              <label class="text-sm text-slate-400 block mb-1">BUJP (kosong = semua)</label>
+              <select name="bujp_id"
+                class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+                <option value="">Semua BUJP</option>
+                {% for b in bujp_list %}
+                <option value="{{ b.id }}">{{ b.nama_bujp }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm text-slate-400 block mb-1">⬆️ Jam Buka Absen Masuk</label>
+              <input name="jam_buka_masuk" type="time" value="07:00" required
+                class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+            </div>
+            <div>
+              <label class="text-sm text-slate-400 block mb-1">⬆️ Jam Tutup Absen Masuk</label>
+              <input name="jam_tutup_masuk" type="time" value="09:00" required
+                class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm text-slate-400 block mb-1">⬇️ Jam Buka Absen Keluar</label>
+              <input name="jam_buka_keluar" type="time" value="16:00"
+                class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+            </div>
+            <div>
+              <label class="text-sm text-slate-400 block mb-1">⬇️ Jam Tutup Absen Keluar</label>
+              <input name="jam_tutup_keluar" type="time" value="23:59"
+                class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm text-slate-400 block mb-1">⏰ Batas Terlambat</label>
+              <input name="batas_terlambat" type="time" value="08:00"
+                class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+            </div>
+            <div>
+              <label class="text-sm text-slate-400 block mb-1">📍 Radius Geofence (meter)</label>
+              <input name="radius_meter" type="number" value="200" min="50" max="5000"
+                class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+            </div>
+          </div>
+          <div>
+            <label class="text-sm text-slate-400 block mb-1">Keterangan (opsional)</label>
+            <textarea name="keterangan" rows="2"
+              class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none"></textarea>
+          </div>
+          <div class="flex items-center gap-3">
+            <input type="checkbox" name="langsung_aktif" id="cb_aktif" value="1" class="w-5 h-5 rounded">
+            <label for="cb_aktif" class="text-sm text-slate-300">Langsung aktifkan sesi setelah dibuat</label>
+          </div>
+          <div class="flex gap-3 pt-2">
+            <button type="button" onclick="document.getElementById('modalBuatSesi').classList.add('hidden')"
+              class="flex-1 rounded-2xl bg-white/5 border border-white/10 px-5 py-3 font-bold">Batal</button>
+            <button type="submit"
+              class="flex-1 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black px-5 py-3">
+              ✅ Buat Sesi
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+    """, sesi_list=sesi_list, bujp_list=bujp_list, config=config)
+    return render_page("Kelola Sesi Absensi", body, user)
+
+
+@app.route("/admin/absensi/config", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_absensi_config():
+    db = get_db()
+    ts = now_str()
+    user = current_user()
+    for key in ("absensi_mode", "radius_absen_default", "geofence_wajib_global"):
+        val = request.form.get(key)
+        if val is not None:
+            db.execute("""
+                INSERT INTO absensi_config (config_key, config_value, updated_by, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(config_key) DO UPDATE SET
+                    config_value = excluded.config_value,
+                    updated_by = excluded.updated_by,
+                    updated_at = excluded.updated_at
+            """, (key, val.strip(), user["id"], ts))
+    db.commit()
+    log_action("ADMIN_UPDATE_ABSENSI_CONFIG", "absensi_config", None)
+    return redirect(url_for("admin_absensi_sesi"))
+
+
+@app.route("/admin/absensi/sesi/buat", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_absensi_sesi_buat():
+    db = get_db()
+    ts = now_str()
+    user = current_user()
+
+    nama_sesi     = (request.form.get("nama_sesi") or "").strip()
+    tanggal       = request.form.get("tanggal") or now_wib().strftime("%Y-%m-%d")
+    bujp_id       = request.form.get("bujp_id") or None
+    jam_buka_masuk  = request.form.get("jam_buka_masuk") or "07:00"
+    jam_tutup_masuk = request.form.get("jam_tutup_masuk") or "09:00"
+    jam_buka_keluar  = request.form.get("jam_buka_keluar") or "16:00"
+    jam_tutup_keluar = request.form.get("jam_tutup_keluar") or "23:59"
+    batas_terlambat  = request.form.get("batas_terlambat") or "08:00"
+    radius_meter    = int(request.form.get("radius_meter") or 200)
+    keterangan    = (request.form.get("keterangan") or "").strip()
+    langsung_aktif  = request.form.get("langsung_aktif") == "1"
+
+    if not nama_sesi:
+        return redirect(url_for("admin_absensi_sesi"))
+
+    status_awal = "aktif" if langsung_aktif else "draft"
+    diaktifkan_oleh = user["id"] if langsung_aktif else None
+    diaktifkan_at   = ts if langsung_aktif else None
+
+    cur = db.execute("""
+        INSERT INTO absensi_sesi (
+            nama_sesi, tanggal, jam_buka_masuk, jam_tutup_masuk,
+            jam_buka_keluar, jam_tutup_keluar, batas_terlambat,
+            status, radius_meter, bujp_id, keterangan,
+            dibuat_oleh, diaktifkan_oleh, diaktifkan_at, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        nama_sesi, tanggal, jam_buka_masuk, jam_tutup_masuk,
+        jam_buka_keluar, jam_tutup_keluar, batas_terlambat,
+        status_awal, radius_meter, bujp_id, keterangan,
+        user["id"], diaktifkan_oleh, diaktifkan_at, ts, ts
+    ))
+    db.commit()
+    log_action("ADMIN_BUAT_SESI_ABSENSI", "absensi_sesi", cur.lastrowid,
+               f"nama={nama_sesi};tanggal={tanggal};aktif={langsung_aktif}")
+    return redirect(url_for("admin_absensi_sesi"))
+
+
+@app.route("/admin/absensi/sesi/<int:sesi_id>/aktifkan", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_absensi_sesi_aktifkan(sesi_id):
+    db = get_db()
+    ts = now_str()
+    user = current_user()
+    db.execute("""
+        UPDATE absensi_sesi SET status='aktif', diaktifkan_oleh=?, diaktifkan_at=?, updated_at=?
+        WHERE id=?
+    """, (user["id"], ts, ts, sesi_id))
+    db.commit()
+    log_action("ADMIN_AKTIFKAN_SESI", "absensi_sesi", sesi_id)
+    return redirect(url_for("admin_absensi_sesi"))
+
+
+@app.route("/admin/absensi/sesi/<int:sesi_id>/tutup", methods=["POST"])
+@login_required
+@roles_required("admin")
+def admin_absensi_sesi_tutup(sesi_id):
+    db = get_db()
+    ts = now_str()
+    db.execute("""
+        UPDATE absensi_sesi SET status='ditutup', updated_at=? WHERE id=?
+    """, (ts, sesi_id))
+    db.commit()
+    log_action("ADMIN_TUTUP_SESI", "absensi_sesi", sesi_id)
+    return redirect(url_for("admin_absensi_sesi"))
+
+
+@app.route("/admin/absensi/sesi/<int:sesi_id>/detail")
+@login_required
+@roles_required("admin")
+def admin_absensi_sesi_detail(sesi_id):
+    db = get_db()
+    user = current_user()
+
+    sesi = db.execute("""
+        SELECT s.*, 
+               COALESCE(b.nama_bujp, 'Semua BUJP') AS nama_bujp, 
+               u.full_name AS dibuat_oleh_nama
+        FROM absensi_sesi s
+        LEFT JOIN bujp b ON b.id = s.bujp_id
+        LEFT JOIN users u ON u.id = s.dibuat_oleh
+        WHERE s.id = ?
+    """, (sesi_id,)).fetchone()
+
+    if not sesi:
+        abort(404)
+
+    # Absensi dalam sesi ini
+    absensi_list = db.execute("""
+        SELECT a.*, 
+               COALESCE(u.full_name, 'User Dihapus') AS full_name, 
+               COALESCE(u.username, 'deleted_user') AS username, 
+               COALESCE(b.nama_bujp, '-') AS nama_bujp
+        FROM absensi a
+        LEFT JOIN users u ON u.id = a.user_id
+        LEFT JOIN bujp b ON b.id = u.bujp_id
+        WHERE a.sesi_id = ?
+        ORDER BY a.id DESC
+    """, (sesi_id,)).fetchall()
+
+    # Hitung statistik
+    masuk_count  = sum(1 for a in absensi_list if a["tipe"] == "MASUK")
+    keluar_count = sum(1 for a in absensi_list if a["tipe"] == "KELUAR")
+    terlambat    = sum(1 for a in absensi_list if a["tipe"] == "MASUK" and a["status"] == "Terlambat")
+
+    body = render_template_string("""
+    <div class="mt-6 space-y-6">
+      <div class="flex items-center gap-4">
+        <a href="{{ url_for('admin_absensi_sesi') }}"
+          class="px-4 py-2 rounded-2xl bg-white/5 border border-white/10 text-sm">← Kembali</a>
+        <h1 class="text-2xl font-black">📅 Detail Sesi: {{ sesi.nama_sesi }}</h1>
+        {% if sesi.status == 'aktif' %}
+        <span class="px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold animate-pulse">🟢 AKTIF</span>
+        {% endif %}
+      </div>
+
+      <!-- Info Sesi -->
+      <div class="glass rounded-3xl p-5 grid md:grid-cols-4 gap-4 text-sm">
+        <div><div class="text-slate-400 mb-1">Tanggal</div><div class="font-bold">{{ sesi.tanggal }}</div></div>
+        <div><div class="text-slate-400 mb-1">⬆️ Jam Masuk</div><div class="font-bold text-emerald-300">{{ sesi.jam_buka_masuk }} – {{ sesi.jam_tutup_masuk }}</div></div>
+        <div><div class="text-slate-400 mb-1">⬇️ Jam Keluar</div><div class="font-bold text-orange-300">{{ sesi.jam_buka_keluar or '-' }} – {{ sesi.jam_tutup_keluar or '-' }}</div></div>
+        <div><div class="text-slate-400 mb-1">BUJP</div><div class="font-bold text-amber-300">{{ sesi.nama_bujp or 'Semua BUJP' }}</div></div>
+        <div><div class="text-slate-400 mb-1">Batas Terlambat</div><div class="font-bold text-red-300">{{ sesi.batas_terlambat }}</div></div>
+        <div><div class="text-slate-400 mb-1">Dibuat Oleh</div><div class="font-bold">{{ sesi.dibuat_oleh_nama }}</div></div>
+        <div><div class="text-slate-400 mb-1">Radius Geofence</div><div class="font-bold">{{ sesi.radius_meter }} meter</div></div>
+        <div><div class="text-slate-400 mb-1">Keterangan</div><div class="font-bold">{{ sesi.keterangan or '-' }}</div></div>
+      </div>
+
+      <!-- Statistik -->
+      <div class="grid grid-cols-3 gap-4">
+        <div class="glass rounded-3xl p-5 text-center">
+          <div class="text-4xl font-black text-emerald-400">{{ masuk_count }}</div>
+          <div class="text-sm text-slate-400">Total Absen Masuk</div>
+        </div>
+        <div class="glass rounded-3xl p-5 text-center">
+          <div class="text-4xl font-black text-orange-400">{{ keluar_count }}</div>
+          <div class="text-sm text-slate-400">Total Absen Keluar</div>
+        </div>
+        <div class="glass rounded-3xl p-5 text-center">
+          <div class="text-4xl font-black text-red-400">{{ terlambat }}</div>
+          <div class="text-sm text-slate-400">Terlambat</div>
+        </div>
+      </div>
+
+      <!-- Tabel Absensi -->
+      <div class="glass rounded-3xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-white/10">
+          <h2 class="text-xl font-bold">📋 Daftar Absensi Sesi Ini</h2>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full">
+            <thead>
+              <tr class="bg-white/5 border-b border-white/10 text-sm text-slate-300">
+                <th class="text-left px-5 py-3">Nama Satpam</th>
+                <th class="text-left px-5 py-3">BUJP</th>
+                <th class="text-left px-5 py-3">Tipe</th>
+                <th class="text-left px-5 py-3">Waktu</th>
+                <th class="text-left px-5 py-3">Status</th>
+                <th class="text-left px-5 py-3">Lokasi GPS</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-white/5">
+            {% for a in absensi_list %}
+              <tr class="hover:bg-white/5 transition">
+                <td class="px-5 py-3">
+                  <div class="font-bold">{{ a.full_name }}</div>
+                  <div class="text-xs text-slate-400">@{{ a.username }}</div>
+                </td>
+                <td class="px-5 py-3 text-amber-300 text-sm">{{ a.nama_bujp or '-' }}</td>
+                <td class="px-5 py-3">
+                  {% if a.tipe == 'MASUK' %}
+                  <span class="px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 text-xs font-bold">⬆️ MASUK</span>
+                  {% else %}
+                  <span class="px-2 py-1 rounded-lg bg-orange-500/20 text-orange-400 text-xs font-bold">⬇️ KELUAR</span>
+                  {% endif %}
+                </td>
+                <td class="px-5 py-3 text-sm">{{ a.tanggal }} {{ a.waktu }}</td>
+                <td class="px-5 py-3 text-sm">
+                  {% if a.status == 'Terlambat' %}
+                  <span class="text-red-400">⚠️ Terlambat</span>
+                  {% elif a.status == 'Tepat Waktu' %}
+                  <span class="text-emerald-400">✅ Tepat Waktu</span>
+                  {% else %}
+                  <span class="text-slate-300">{{ a.status or '-' }}</span>
+                  {% endif %}
+                </td>
+                <td class="px-5 py-3 text-xs font-mono text-cyan-300">
+                  {% if a.lat %} {{ '%.5f'|format(a.lat) }}, {{ '%.5f'|format(a.lng) }}
+                  <a href="https://www.google.com/maps/search/?api=1&query={{ a.lat }},{{ a.lng }}"
+                    target="_blank" class="ml-1 text-cyan-500">🗺</a>
+                  {% else %} - {% endif %}
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="6" class="py-10 text-center text-slate-400">
+                  <div class="text-4xl mb-3">📭</div>
+                  <div>Belum ada absensi dalam sesi ini</div>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    """, sesi=sesi, absensi_list=absensi_list,
+         masuk_count=masuk_count, keluar_count=keluar_count, terlambat=terlambat)
+    return render_page(f"Detail Sesi: {sesi['nama_sesi']}", body, user)
+
+
+@app.route("/admin/absensi/rekap")
+@login_required
+@roles_required("admin")
+def admin_absensi_rekap():
+    db = get_db()
+    user = current_user()
+
+    tanggal_dari = request.args.get("dari") or now_wib().strftime("%Y-%m-01")
+    tanggal_ke   = request.args.get("ke") or now_wib().strftime("%Y-%m-%d")
+    bujp_filter  = request.args.get("bujp_id", type=int)
+
+    query = """
+        SELECT a.*, u.full_name, u.username, b.nama_bujp
+        FROM absensi a
+        JOIN users u ON u.id = a.user_id
+        LEFT JOIN bujp b ON b.id = u.bujp_id
+        WHERE DATE(a.tanggal) BETWEEN ? AND ?
+    """
+    params = [tanggal_dari, tanggal_ke]
+    if bujp_filter:
+        query += " AND u.bujp_id = ?"
+        params.append(bujp_filter)
+    query += " ORDER BY a.id DESC LIMIT 500"
+
+    absensi_list = db.execute(query, params).fetchall()
+    bujp_list = db.execute("SELECT id, nama_bujp FROM bujp WHERE is_active=1 ORDER BY nama_bujp").fetchall()
+
+    total_masuk  = sum(1 for a in absensi_list if a["tipe"] == "MASUK")
+    total_keluar = sum(1 for a in absensi_list if a["tipe"] == "KELUAR")
+    terlambat    = sum(1 for a in absensi_list if a["tipe"] == "MASUK" and a["status"] == "Terlambat")
+
+    body = render_template_string("""
+    <div class="mt-6 space-y-6">
+      <div>
+        <h1 class="text-3xl font-black mb-1">📊 REKAP ABSENSI SATPAM</h1>
+        <p class="text-slate-400">Laporan kehadiran satpam semua BUJP yang dapat difilter berdasarkan tanggal dan BUJP</p>
+      </div>
+
+      <!-- Filter -->
+      <div class="glass rounded-3xl p-5">
+        <form method="get" class="grid md:grid-cols-4 gap-4 items-end">
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Tanggal Dari</label>
+            <input type="date" name="dari" value="{{ tanggal_dari }}"
+              class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+          </div>
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Tanggal Sampai</label>
+            <input type="date" name="ke" value="{{ tanggal_ke }}"
+              class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+          </div>
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Filter BUJP</label>
+            <select name="bujp_id" class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+              <option value="">Semua BUJP</option>
+              {% for b in bujp_list %}
+              <option value="{{ b.id }}" {% if bujp_filter == b.id %}selected{% endif %}>{{ b.nama_bujp }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <button class="rounded-2xl bg-cyan-500 text-slate-950 font-bold px-5 py-3">🔍 Filter</button>
+        </form>
+      </div>
+
+      <!-- Statistik -->
+      <div class="grid grid-cols-3 gap-4">
+        <div class="glass rounded-3xl p-5 text-center">
+          <div class="text-4xl font-black text-emerald-400">{{ total_masuk }}</div>
+          <div class="text-sm text-slate-400">Total Absen Masuk</div>
+        </div>
+        <div class="glass rounded-3xl p-5 text-center">
+          <div class="text-4xl font-black text-orange-400">{{ total_keluar }}</div>
+          <div class="text-sm text-slate-400">Total Absen Keluar</div>
+        </div>
+        <div class="glass rounded-3xl p-5 text-center">
+          <div class="text-4xl font-black text-red-400">{{ terlambat }}</div>
+          <div class="text-sm text-slate-400">Terlambat</div>
+        </div>
+      </div>
+
+      <!-- Tabel -->
+      <div class="glass rounded-3xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-white/10 flex items-center justify-between">
+          <h2 class="text-xl font-bold">📋 Data Absensi ({{ absensi_list|length }} records)</h2>
+          <a href="/admin/absensi/rekap/export?dari={{ tanggal_dari }}&ke={{ tanggal_ke }}&bujp_id={{ bujp_filter or '' }}"
+            class="px-4 py-2 rounded-2xl bg-emerald-500/20 text-emerald-400 text-sm font-bold">
+            📥 Export Excel
+          </a>
+        </div>
+        <div class="overflow-x-auto max-h-[60vh]">
+          <table class="w-full">
+            <thead class="sticky top-0 bg-slate-900">
+              <tr class="bg-white/5 border-b border-white/10 text-sm text-slate-300">
+                <th class="text-left px-5 py-3">Nama Satpam</th>
+                <th class="text-left px-5 py-3">BUJP</th>
+                <th class="text-left px-5 py-3">Tanggal</th>
+                <th class="text-left px-5 py-3">Waktu</th>
+                <th class="text-left px-5 py-3">Tipe</th>
+                <th class="text-left px-5 py-3">Status</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-white/5">
+            {% for a in absensi_list %}
+              <tr class="hover:bg-white/5 transition text-sm">
+                <td class="px-5 py-3">
+                  <div class="font-bold">{{ a.full_name }}</div>
+                  <div class="text-xs text-slate-400">@{{ a.username }}</div>
+                </td>
+                <td class="px-5 py-3 text-amber-300">{{ a.nama_bujp or '-' }}</td>
+                <td class="px-5 py-3">{{ a.tanggal }}</td>
+                <td class="px-5 py-3">{{ a.waktu }}</td>
+                <td class="px-5 py-3">
+                  {% if a.tipe == 'MASUK' %}
+                  <span class="text-emerald-400">⬆️ MASUK</span>
+                  {% else %}
+                  <span class="text-orange-400">⬇️ KELUAR</span>
+                  {% endif %}
+                </td>
+                <td class="px-5 py-3">
+                  {% if a.status == 'Terlambat' %}<span class="text-red-400">⚠️ Terlambat</span>
+                  {% elif a.status == 'Tepat Waktu' %}<span class="text-emerald-400">✅ Tepat Waktu</span>
+                  {% else %}<span class="text-slate-300">{{ a.status or 'Normal' }}</span>{% endif %}
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="6" class="py-10 text-center text-slate-400">Tidak ada data absensi untuk filter ini</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    """, absensi_list=absensi_list, bujp_list=bujp_list,
+         tanggal_dari=tanggal_dari, tanggal_ke=tanggal_ke,
+         bujp_filter=bujp_filter,
+         total_masuk=total_masuk, total_keluar=total_keluar, terlambat=terlambat)
+    return render_page("Rekap Absensi", body, user)
+
+
+@app.route("/admin/absensi/rekap/export")
+@login_required
+@roles_required("admin")
+def admin_absensi_rekap_export():
+    db = get_db()
+    tanggal_dari = request.args.get("dari") or now_wib().strftime("%Y-%m-01")
+    tanggal_ke   = request.args.get("ke") or now_wib().strftime("%Y-%m-%d")
+    bujp_filter  = request.args.get("bujp_id", type=int)
+
+    query = """
+        SELECT u.full_name AS "Nama Satpam", u.username AS "Username",
+               u.no_kta AS "No KTA", b.nama_bujp AS "BUJP",
+               a.tanggal AS "Tanggal", a.waktu AS "Waktu",
+               a.tipe AS "Tipe", a.status AS "Status",
+               a.lat AS "Latitude", a.lng AS "Longitude", a.akurasi AS "Akurasi GPS"
+        FROM absensi a
+        JOIN users u ON u.id = a.user_id
+        LEFT JOIN bujp b ON b.id = u.bujp_id
+        WHERE DATE(a.tanggal) BETWEEN ? AND ?
+    """
+    params = [tanggal_dari, tanggal_ke]
+    if bujp_filter:
+        query += " AND u.bujp_id = ?"
+        params.append(bujp_filter)
+    query += " ORDER BY a.tanggal DESC, a.waktu DESC"
+
+    rows = db.execute(query, params).fetchall()
+    df = pd.DataFrame([dict(row) for row in rows])
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Rekap Absensi")
+    output.seek(0)
+
+    log_action("ADMIN_EXPORT_ABSENSI", "absensi", None,
+               f"dari={tanggal_dari};ke={tanggal_ke};bujp={bujp_filter}")
+    filename = f"rekap_absensi_{tanggal_dari}_sd_{tanggal_ke}.xlsx"
+    resp = make_response(output.read())
+    resp.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    resp.headers["Content-Disposition"] = f"attachment; filename={filename}"
+    return resp
+
+
+@app.route("/api/satpam/<int:user_id>/trail")
+@login_required
+@roles_required("admin", "direktur_binmas")
+def api_satpam_trail(user_id):
+    """✅ [NEW] Ambil riwayat lokasi satpam hari ini untuk ditampilkan sebagai trail di peta."""
+    db = get_db()
+    today = now_wib().strftime("%Y-%m-%d")
+    rows = db.execute("""
+        SELECT lat, lng, accuracy, created_at
+        FROM locations
+        WHERE user_id = ? AND DATE(created_at) = ?
+        ORDER BY id ASC
+        LIMIT 200
+    """, (user_id, today)).fetchall()
+    return jsonify({"trail": [dict(r) for r in rows]})
 
 
 @app.route("/emergency-alert-map")
