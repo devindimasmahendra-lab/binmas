@@ -587,6 +587,7 @@ def init_db():
             try:
                 db.execute("ALTER TABLE users ADD COLUMN bujp_verified INTEGER NOT NULL DEFAULT 0")
                 db.commit()
+                print("✅ [MIGRASI] Kolom bujp_verified ditambahkan ke tabel users")
             except:
                 pass
         
@@ -603,6 +604,13 @@ def init_db():
                 db.commit()
             except:
                 pass
+
+        # Set semua user existing yang sudah punya bujp_id menjadi terverifikasi otomatis
+        try:
+            db.execute("UPDATE users SET bujp_verified = 1 WHERE bujp_id IS NOT NULL AND bujp_verified = 0")
+            db.commit()
+        except:
+            pass
     except:
         pass
 
@@ -1641,6 +1649,7 @@ def login_satpam():
             username = (request.form.get("username") or "").strip()
             password = request.form.get("password") or ""
             user = get_db().execute("SELECT * FROM users WHERE username=? AND role='satpam'", (username,)).fetchone()
+            
             if not user or not user["is_active"]:
                 error = "❌ Username Satpam tidak ditemukan / nonaktif."
             elif not verify_password(password, user["password_hash"]):
@@ -1652,12 +1661,18 @@ def login_satpam():
             else:
                 # ✅ LOGIN BERHASIL - RESET COUNTER FAILURE
                 reset_login_failures(client_ip)
-                session.clear()
-                session["user_id"] = user["id"]
-                session["role"] = user["role"]
-                session["username"] = user["username"]
-                log_action("LOGIN_SUCCESS", "user", user["id"], f"role={user['role']} satpam")
-                return redirect_by_role(user["role"])
+
+                # ✅ BLOKIR LOGIN JIKA BELUM DIVERIFIKASI OLEH BUJP
+                if user["bujp_id"] and user["bujp_verified"] == 0:
+                    error = "❌ Akun Anda BELUM diverifikasi oleh Admin BUJP. Silahkan hubungi pihak BUJP untuk verifikasi."
+                    log_action("LOGIN_BLOCKED", "user", user["id"], f"reason=bujp_not_verified;username={username}")
+                else:
+                    session.clear()
+                    session["user_id"] = user["id"]
+                    session["role"] = user["role"]
+                    session["username"] = user["username"]
+                    log_action("LOGIN_SUCCESS", "user", user["id"], f"role={user['role']} satpam")
+                    return redirect_by_role(user["role"])
 
     body = render_template_string("""
     <style>
@@ -5658,6 +5673,8 @@ def monitor_map():
     db = get_db()
     total_satpam = db.execute("SELECT COUNT(*) FROM users WHERE role='satpam' AND is_active=1").fetchone()[0]
     total_bujp = db.execute("SELECT COUNT(*) FROM bujp WHERE is_active=1").fetchone()[0]
+    # ✅ AMBIL SEMUA DAFTAR BUJP UNTUK DROPDOWN DI FORM TAMBAH USER
+    bujp_list = db.execute("SELECT id, nama_bujp FROM bujp WHERE is_active=1 ORDER BY nama_bujp ASC").fetchall()
     total_anggota_bujp = db.execute("SELECT COUNT(*) FROM users WHERE bujp_id IS NOT NULL AND is_active=1").fetchone()[0]
     
     snapshot = latest_snapshot()
@@ -6101,7 +6118,8 @@ def monitor_map():
         offline_satpam=offline_satpam,
         inside_geofence=inside_geofence,
         kta_complete=kta_complete,
-        total_bujp=total_bujp,
+    total_bujp=total_bujp,
+    bujp_list=bujp_list,
         total_anggota_bujp=total_anggota_bujp,
         on_shift=on_shift,
         avg_accuracy=avg_accuracy,
@@ -6140,6 +6158,9 @@ def admin_dashboard():
         SELECT * FROM rekening_bank 
         ORDER BY urutan ASC, id ASC
     """).fetchall()
+    
+    # ✅ DAFTAR BUJP UNTUK DROPDOWN TAMBAH USER
+    bujp_list = db.execute("SELECT id, nama_bujp FROM bujp WHERE is_active=1 ORDER BY nama_bujp ASC").fetchall()
 
     body = render_template_string("""
     <div class="mt-6">
@@ -6717,10 +6738,41 @@ def admin_dashboard():
                 </div>
                 <div>
                     <label class="text-sm text-slate-400 block mb-1">Role</label>
-                    <select name="role" required class="w-full rounded-2xl bg-slate-900 border border-white/10 px-4 py-3 outline-none">
+                    <select name="role" id="selectRole" required class="w-full rounded-2xl bg-slate-900 border border-white/10 px-4 py-3 outline-none" onchange="toggleBujpSelect()">
                         {% for r in roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
                     </select>
                 </div>
+                
+                <!-- ✅ BARU: FIELD PILIHAN BUJP - WAJIB UNTUK ROLE SATPAM & ANGGOTA -->
+                <div id="bujpFieldContainer" class="hidden">
+                    <label class="text-sm text-slate-400 block mb-1">🏢 BUJP * (WAJIB UNTUK SATPAM)</label>
+                    <select name="bujp_id" id="bujpIdSelect" class="w-full rounded-2xl bg-slate-900 border border-white/10 px-4 py-3 outline-none">
+                        <option value="">-- Pilih BUJP --</option>
+                        {% for b in bujp_list %}
+                        <option value="{{ b.id }}">{{ b.nama_bujp }}</option>
+                        {% endfor %}
+                    </select>
+                    <p class="text-xs text-amber-400 mt-1">⚠️ Untuk role Satpam / Anggota, field ini WAJIB diisi!</p>
+                </div>
+
+                <script>
+                function toggleBujpSelect() {
+                    const role = document.getElementById('selectRole').value;
+                    const container = document.getElementById('bujpFieldContainer');
+                    const select = document.getElementById('bujpIdSelect');
+                    
+                    if (role === 'satpam' || role === 'anggota') {
+                        container.classList.remove('hidden');
+                        select.required = true;
+                    } else {
+                        container.classList.add('hidden');
+                        select.required = false;
+                    }
+                }
+                
+                // Jalankan saat halaman load
+                document.addEventListener('DOMContentLoaded', toggleBujpSelect);
+                </script>
                 <div class="flex gap-3 mt-6">
                     <button type="button" onclick="hideAddUserModal()" class="flex-1 bg-slate-500/20 text-slate-300 px-6 py-3 rounded-2xl font-bold">Batal</button>
                     <button type="submit" class="flex-1 bg-emerald-500 text-slate-950 px-6 py-3 rounded-2xl font-bold">✅ Simpan User</button>
@@ -6751,6 +6803,7 @@ def admin_user_create():
     full_name = (request.form.get("full_name") or "").strip()
     role = (request.form.get("role") or "").strip()
     password = request.form.get("password") or ""
+    bujp_id = request.form.get("bujp_id", type=int) or None
     
     error_msg = None
     if not username:
@@ -6761,17 +6814,34 @@ def admin_user_create():
         error_msg = "Role tidak valid"
     elif len(password) < 4:
         error_msg = "Password minimal 4 karakter"
+    # ✅ VALIDASI BARU: untuk role satpam/anggota, bujp_id WAJIB diisi
+    elif role in ('satpam', 'anggota') and not bujp_id:
+        error_msg = "Untuk role Satpam / Anggota, wajib memilih BUJP terlebih dahulu"
     
     if error_msg:
         return f"<script>alert('{error_msg}'); window.history.back();</script>", 400
         
     try:
-        cur = get_db().execute(
-            "INSERT INTO users (username, full_name, role, password_hash, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
-            (username, full_name, role, hash_password(password), now_str(), now_str()),
+        db = get_db()
+        ts = now_str()
+        
+        # ✅ SET DEFAULT: bujp_verified = 0 ketika dibuat oleh admin (akan diverifikasi oleh BUJP)
+        cur = db.execute(
+            "INSERT INTO users (username, full_name, role, password_hash, is_active, bujp_id, bujp_verified, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, 0, ?, ?)",
+            (username, full_name, role, hash_password(password), bujp_id, ts, ts),
         )
-        get_db().commit()
-        log_action("ADMIN_CREATE_USER", "user", cur.lastrowid, f"username={username};role={role}")
+        user_id = cur.lastrowid
+        db.commit()
+        
+        log_action("ADMIN_CREATE_USER", "user", user_id, f"username={username};role={role};bujp_id={bujp_id};bujp_verified=0")
+        
+        # ✅ KIRIM NOTIFIKASI KE ADMIN BUJP TERKAIT
+        if bujp_id:
+            # TODO: Tambahkan notifikasi push ke admin BUJP
+            bujp = db.execute("SELECT nama_bujp, user_id FROM bujp WHERE id = ?", (bujp_id,)).fetchone()
+            if bujp:
+                log_action("BUJP_NEW_MEMBER_PENDING", "bujp", bujp_id, f"satpam_baru_id={user_id};satpam_nama={full_name}")
+        
     except sqlite3.IntegrityError:
         log_action("ADMIN_CREATE_USER_FAILED", "user", None, f"username={username};duplicate=1")
         return "<script>alert('Username sudah terdaftar!'); window.history.back();</script>", 400
