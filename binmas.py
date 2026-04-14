@@ -1009,6 +1009,7 @@ BASE_TEMPLATE = """
       }
     </style>
 
+    {% if not hide_navbar %}
     <header id="app-header" class="glass rounded-3xl px-4 py-3 sticky top-3 z-50">
       <div class="flex items-center justify-between gap-3">
         
@@ -1091,7 +1092,9 @@ BASE_TEMPLATE = """
         }
       });
     </script>
-    <main class="py-4">{{ body|safe }}</main>
+    {% endif %}
+    
+    <main class="{% if hide_navbar %}py-8{% else %}py-4{% endif %}">{{ body|safe }}</main>
   </div>
   
   <script>
@@ -1176,7 +1179,7 @@ BASE_TEMPLATE = """
 """
 
 
-def render_page(title, body_html, user=None):
+def render_page(title, body_html, user=None, hide_navbar=False):
     # Generate nav untuk desktop dan mobile
     nav_desktop = nav_html(user)
     
@@ -1252,7 +1255,7 @@ def render_page(title, body_html, user=None):
 
         nav_mobile = "".join(nav_items)
     
-    return render_template_string(BASE_TEMPLATE, title=title, app_name=APP_NAME, body=body_html, user=user, nav=nav_desktop, nav_mobile=nav_mobile)
+    return render_template_string(BASE_TEMPLATE, title=title, app_name=APP_NAME, body=body_html, user=user, nav=nav_desktop, nav_mobile=nav_mobile, hide_navbar=hide_navbar)
 
 
 def ws_url(path):
@@ -1559,7 +1562,7 @@ def login_satpam():
     });
     </script>
     """, error=error)
-    return render_page("Login Satpam", body)
+    return render_page("Login Satpam", body, hide_navbar=True)
 
 
 # LOGIN UNTUK DIREKTUR BINMAS
@@ -1683,7 +1686,7 @@ def login_direktur():
     });
     </script>
     """, error=error)
-    return render_page("Login Direktur", body)
+    return render_page("Login Direktur", body, hide_navbar=True)
 
 
 # LOGIN UNTUK ADMIN
@@ -1807,7 +1810,7 @@ def login_admin():
     });
     </script>
     """, error=error)
-    return render_page("Login Admin", body)
+    return render_page("Login Admin", body, hide_navbar=True)
 
 
 # LOGIN UNTUK ANGGOTA
@@ -1931,7 +1934,7 @@ def login_anggota():
     });
     </script>
     """, error=error)
-    return render_page("Login Anggota", body)
+    return render_page("Login Anggota", body, hide_navbar=True)
 
 
 # ✅ HALAMAN PENGENALAN / LANDING PAGE UTAMA BINMAS COMMAND CENTER
@@ -2228,7 +2231,7 @@ def login():
       </div>
     </div>
     """)
-    return render_page("Pilih Jenis Login", body)
+    return render_page("Pilih Jenis Login", body, hide_navbar=True)
 
 
 @app.route("/logout")
