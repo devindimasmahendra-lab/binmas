@@ -38,7 +38,7 @@ from datetime import datetime, timedelta
 from threading import Lock
 import pandas as pd
 
-APP_NAME = "SATPAM HEBAT Sumatera Selatan"
+APP_NAME = "Command Center Sumatera Selatan"
 DB_PATH = os.path.join(os.path.dirname(__file__), "app.db")
 PBKDF2_ITERATIONS = 260000
 DEFAULT_RESET_PASSWORD = "binmas@123"
@@ -644,6 +644,24 @@ def init_db():
             "INSERT INTO geofences (name, geojson, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
             ("Area Contoh", json.dumps(sample), admin[0] if admin else None, ts, ts),
         )
+
+    # ✅ [BARU] TABEL RESET PASSWORD SATPAM
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS password_reset (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL UNIQUE,
+                reset_code TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        db.commit()
+    except Exception:
+        pass
 
     db.commit()
     db.close()
@@ -1432,6 +1450,182 @@ def sw():
 
 
 # LOGIN UNTUK SATPAM
+# ✅ [NEW] SISTEM LUPA PASSWORD SATPAM - JENIUS & AMAN
+@app.route("/login/satpam/lupa-password", methods=["GET", "POST"])
+def satpam_lupa_password():
+    msg = ""
+    error = ""
+    step = 1
+
+    if request.method == "POST":
+        client_ip = request.remote_addr
+        if not check_brute_force(client_ip):
+            error = f"❌ IP Anda terblokir sementara. Silakan coba lagi dalam {BLOCK_DURATION_MINUTES} menit."
+        else:
+            action = request.form.get("action") or ""
+
+            if action == "generate_code":
+                username = (request.form.get("username") or "").strip()
+                if not username:
+                    error = "Masukkan username satpam Anda"
+                else:
+                    user = get_db().execute("SELECT id, username, no_hp, role FROM users WHERE username=? AND role='satpam' AND is_active=1", (username,)).fetchone()
+                    if not user:
+                        error = "❌ Username Satpam tidak ditemukan"
+                        record_login_failure(client_ip)
+                    else:
+                        # Generate kode reset 6 digit angka
+                        reset_code = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
+                        expires_at = (datetime.utcnow() + timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        db = get_db()
+                        # Hanya 1 kode aktif per user, hapus yang lama
+                        db.execute("DELETE FROM password_reset WHERE user_id=?", (user["id"],))
+                        db.execute("""
+                            INSERT INTO password_reset (user_id, reset_code, created_at, expires_at, ip_address, attempts)
+                            VALUES (?, ?, ?, ?, ?, 0)
+                        """, (user["id"], reset_code, now_str(), expires_at, client_ip))
+                        db.commit()
+                        
+                        msg = f"✅ KODE RESET PASSWORD ANDA: <b class='text-2xl text-green-400 font-black tracking-widest'>{reset_code}</b><br><br>🔔 Kode ini berlaku HANYA 15 MENIT, gunakan segera!"
+                        log_action("PASSWORD_RESET_REQUEST", "user", user["id"], f"ip={client_ip}")
+                        step = 2
+
+            elif action == "reset_password":
+                reset_code = (request.form.get("reset_code") or "").strip()
+                password1 = request.form.get("password1") or ""
+                password2 = request.form.get("password2") or ""
+
+                if not reset_code or len(reset_code) != 6:
+                    error = "Kode reset tidak valid"
+                elif len(password1) < 8:
+                    error = "Password baru minimal 8 karakter"
+                elif password1 != password2:
+                    error = "Konfirmasi password tidak sama"
+                else:
+                    db = get_db()
+                    reset = db.execute("""
+                        SELECT r.*, u.username FROM password_reset r
+                        JOIN users u ON u.id = r.user_id
+                        WHERE r.reset_code=?
+                    """, (reset_code,)).fetchone()
+
+                    if not reset:
+                        error = "❌ Kode reset tidak ditemukan"
+                        record_login_failure(client_ip)
+                    elif datetime.strptime(reset["expires_at"], "%Y-%m-%d %H:%M:%S") < datetime.utcnow():
+                        error = "❌ Kode reset sudah kadaluarsa"
+                        db.execute("DELETE FROM password_reset WHERE id=?", (reset["id"],))
+                        db.commit()
+                    elif reset["attempts"] >= 3:
+                        error = "❌ Terlalu banyak percobaan gagal. Kode diblokir."
+                        db.execute("DELETE FROM password_reset WHERE id=?", (reset["id"],))
+                        db.commit()
+                    else:
+                        # Reset password berhasil
+                        db.execute("UPDATE users SET password_hash=?, updated_at=? WHERE id=?", (hash_password(password1), now_str(), reset["user_id"]))
+                        db.execute("DELETE FROM password_reset WHERE user_id=?", (reset["user_id"],))
+                        db.commit()
+                        
+                        reset_login_failures(client_ip)
+                        log_action("PASSWORD_RESET_SUCCESS", "user", reset["user_id"], f"ip={client_ip}")
+                        
+                        msg = """
+                        ✅ PASSWORD BERHASIL DIRESET!
+                        <br><br>
+                        Silahkan login menggunakan password baru Anda.
+                        <br><br>
+                        <a href='/login/satpam' class='inline-block px-6 py-3 rounded-xl bg-green-500 text-slate-950 font-bold mt-4'>← KEMBALI KE LOGIN</a>
+                        """
+                        step = 3
+
+    body = render_template_string("""
+    <style>
+    @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-fadeInUp { animation: fadeInUp 0.6s ease-out forwards; }
+    </style>
+
+    <div class="min-h-[80vh] flex items-center justify-center py-8">
+      <div class="w-full max-w-lg animate-fadeInUp">
+        
+        <div class="text-center mb-8">
+          <div class="w-24 h-24 mx-auto mb-4 rounded-3xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center text-5xl shadow-lg shadow-green-500/30">
+            🔑
+          </div>
+          <h1 class="text-4xl font-black mb-2 text-green-400">LUPA PASSWORD</h1>
+          <div class="text-lg font-bold text-slate-300">Reset Password Satpam</div>
+        </div>
+
+        <div class="glass login-card rounded-3xl p-8 transition-all duration-300" style="border-color: rgba(34, 197, 94, 0.2);">
+          
+          <div class="text-center mb-6">
+            <div class="text-xl font-black text-green-300">Langkah {{ step }} dari 3</div>
+            <div class="text-sm text-slate-400 mt-1">
+              {% if step == 1 %}Masukkan username satpam Anda{% elif step == 2 %}Masukkan kode reset dan password baru{% else %}Selesai!{% endif %}
+            </div>
+          </div>
+
+          {% if msg %}
+          <div class="mb-6 p-4 rounded-2xl bg-green-500/10 border border-green-500/20 text-green-200 text-sm animate-fadeInUp text-center">
+            {{ msg|safe }}
+          </div>
+          {% endif %}
+          
+          {% if error %}
+          <div class="mb-6 p-4 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-200 text-sm animate-fadeInUp">
+            ⚠️ {{ error }}
+          </div>
+          {% endif %}
+
+          {% if step == 1 %}
+          <form method="post" class="space-y-5">
+            <input type="hidden" name="action" value="generate_code">
+            <div>
+              <label class="text-sm text-slate-400 mb-2 block">👤 Username Satpam</label>
+              <input name="username" required autocomplete="username" autofocus
+                class="w-full rounded-2xl bg-white/5 border border-green-500/20 pl-12 pr-4 py-4 outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500/50 transition-all"
+                placeholder="Masukkan username satpam">
+            </div>
+            <button type="submit" class="w-full rounded-2xl bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-slate-950 font-black px-4 py-4 transition-all duration-300">
+              ✅ KIRIM KODE RESET
+            </button>
+          </form>
+          {% elif step == 2 %}
+          <form method="post" class="space-y-5">
+            <input type="hidden" name="action" value="reset_password">
+            <div>
+              <label class="text-sm text-slate-400 mb-2 block">🔢 Kode Reset 6 Digit</label>
+              <input name="reset_code" required maxlength="6" pattern="[0-9]{6}" inputmode="numeric"
+                class="w-full rounded-2xl bg-white/5 border border-green-500/20 px-4 py-4 outline-none focus:ring-2 focus:ring-green-500 text-center text-3xl font-black tracking-[1rem]">
+            </div>
+            <div>
+              <label class="text-sm text-slate-400 mb-2 block">🔐 Password Baru</label>
+              <input type="password" name="password1" required minlength="8"
+                class="w-full rounded-2xl bg-white/5 border border-green-500/20 px-4 py-4 outline-none focus:ring-2 focus:ring-green-500">
+            </div>
+            <div>
+              <label class="text-sm text-slate-400 mb-2 block">🔐 Ulangi Password Baru</label>
+              <input type="password" name="password2" required minlength="8"
+                class="w-full rounded-2xl bg-white/5 border border-green-500/20 px-4 py-4 outline-none focus:ring-2 focus:ring-green-500">
+            </div>
+            <button type="submit" class="w-full rounded-2xl bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-slate-950 font-black px-4 py-4 transition-all duration-300">
+              ✅ RESET PASSWORD SEKARANG
+            </button>
+          </form>
+          {% endif %}
+
+          <div class="mt-6 pt-6 border-t border-white/10 text-center">
+            <a href="{{ url_for('login_satpam') }}" class="text-sm text-slate-400 hover:text-green-400 transition">← Kembali ke Halaman Login Satpam</a>
+          </div>
+
+        </div>
+      </div>
+    </div>
+    """, msg=msg, error=error, step=step)
+    
+    return render_page("Lupa Password Satpam", body, hide_navbar=True)
+
+
 @app.route("/login/satpam", methods=["GET", "POST"])
 def login_satpam():
     if session.get("user_id") and current_user():
@@ -1535,6 +1729,11 @@ def login_satpam():
           </form>
 
           <div class="mt-6 pt-6 border-t border-white/10 text-center">
+            <div class="mb-4">
+              <a href="{{ url_for('satpam_lupa_password') }}" class="text-sm text-amber-400 hover:text-amber-300 transition font-bold">
+                🔑 LUPA PASSWORD? KLIK DISINI UNTUK RESET
+              </a>
+            </div>
             <a href="{{ url_for('login') }}" class="text-sm text-slate-400 hover:text-green-400 transition">← Kembali ke Halaman Utama</a>
           </div>
 
@@ -1736,7 +1935,7 @@ def login_admin():
           </div>
           <h1 class="text-4xl font-black mb-2 text-cyan-400">LOGIN ADMIN</h1>
           <div class="text-lg font-bold text-slate-300">Panel Administrator Sistem</div>
-          <div class="text-xs text-slate-500 mt-1">Pengelolaan User, Geofence & Audit Log</div>
+          <div class="text-xs text-slate-500 mt-1">Pengelolaan User, Geofence & History Aktifitas</div>
         </div>
 
         <div class="glass login-card rounded-3xl p-8 transition-all duration-300 animate-fadeInUp animate-delay-200" style="border-color: rgba(6, 182, 212, 0.2);">
@@ -5968,9 +6167,8 @@ def admin_dashboard():
       <!-- Tab Navigation -->
       <div class="flex gap-2 mb-6 border-b border-white/10 pb-3">
         <button id="tabUsers" onclick="showTab('users')" class="px-5 py-3 rounded-2xl bg-cyan-500 text-slate-950 font-bold tab-btn">👥 Data Satpam</button>
-        <button id="tabGeofence" onclick="showTab('geofence')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">🗺️ Geofence Editor</button>
-        <button id="tabRekening" onclick="showTab('rekening')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">💳 Nomor Rekening</button>
-        <button id="tabAudit" onclick="showTab('audit')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">📋 Audit Log</button>
+        <button id="tabGeofence" onclick="showTab('geofence')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">🗺️ Pemetaan Perusahaan</button>
+        <button id="tabAudit" onclick="showTab('audit')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">📋 History Aktifitas</button>
       </div>
 
       <!-- Tab Users -->
@@ -6048,7 +6246,7 @@ def admin_dashboard():
       <div id="tabGeofenceContent" class="glass rounded-3xl p-5 hidden">
         <div class="p-4 border-b border-white/10 flex items-center justify-between">
           <div>
-            <h2 class="text-xl font-black">Geofence Editor</h2>
+            <h2 class="text-xl font-black">Pemetaan Perusahaan</h2>
             <p class="text-sm text-slate-400">Gambar polygon/rectangle lalu simpan. Update area langsung dibroadcast ke map monitoring via WebSocket.</p>
           </div>
           <button id="clearShapes" class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm">Clear Draft</button>
@@ -6136,23 +6334,9 @@ def admin_dashboard():
           </button>
         </div>
         
-        <div class="p-3 mb-4 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-sm text-slate-300">
-          ✅ Daftar nomor rekening yang tercantum disini akan muncul otomatis di halaman pengajuan pembayaran KTA SATPAM. Setiap perubahan akan dicatat di history dengan nama admin yang mengubah.
-        </div>
         
-        <div class="overflow-auto max-h-[60vh]">
-          <table class="w-full text-sm">
-            <thead class="sticky top-0 bg-[#0f172a] z-10">
-              <tr class="border-b border-white/10 text-slate-400">
-                <th class="py-3 px-2 text-left">No</th>
-                <th class="py-3 px-2 text-left">Nama Bank</th>
-                <th class="py-3 px-2 text-left">Nomor Rekening</th>
-                <th class="py-3 px-2 text-left">Atas Nama</th>
-                <th class="py-3 px-2 text-center">Status</th>
-                <th class="py-3 px-2 text-center">Update</th>
-                <th class="py-3 px-2 text-center">Aksi</th>
-              </tr>
-            </thead>
+        
+        
             <tbody>
             {% for rekening in rekening_list %}
               <tr class="border-b border-white/5 hover:bg-white/5 transition">
@@ -6188,9 +6372,9 @@ def admin_dashboard():
       </div>
 
 
-      <!-- Tab Audit Log -->
+      <!-- Tab History Aktifitas -->
       <div id="tabAuditContent" class="glass rounded-3xl p-5 hidden">
-        <h2 class="text-xl font-black mb-4">Audit Log (200 terbaru)</h2>
+        <h2 class="text-xl font-black mb-4">History Aktifitas (200 terbaru)</h2>
         <div class="overflow-auto max-h-[60vh]">
           <table class="w-full text-sm">
             <thead class="text-left text-slate-400"><tr><th class="py-2 pr-3">Waktu</th><th class="py-2 pr-3">Aktor</th><th class="py-2 pr-3">Action</th><th class="py-2 pr-3">Type</th><th class="py-2 pr-3">Target</th><th class="py-2 pr-3">Detail</th><th class="py-2 pr-3">IP</th></tr></thead>
@@ -6205,7 +6389,7 @@ def admin_dashboard():
                 <td class="py-2 pr-3">{{ log.detail or '-' }}</td>
                 <td class="py-2 pr-3">{{ log.ip_address or '-' }}</td>
               </tr>
-              {% else %}<tr><td colspan="7" class="py-3 text-slate-400">Belum ada audit log.</td></tr>{% endfor %}
+              {% else %}<tr><td colspan="7" class="py-3 text-slate-400">Belum ada History Aktifitas.</td></tr>{% endfor %}
             </tbody>
           </table>
         </div>
