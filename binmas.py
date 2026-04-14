@@ -963,20 +963,134 @@ BASE_TEMPLATE = """
   </style>
 
   <div class="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
-    <header id="app-header" class="glass rounded-3xl px-4 py-3 sticky top-3 z-30">
-      <div class="flex flex-col md:flex-row items-start md:items-center gap-3 md:gap-4 justify-between">
-        <div>
-          <div class="app-title text-xl font-black tracking-wide">{{ app_name }}</div>
-          <div class="app-version text-xs text-slate-400">Version Number 2.0.0.1.10042026</div>
-        </div>
-        <div class="flex flex-wrap gap-2 items-center">
+    <!-- ✅ NAVBAR MODERN RESPONSIF -->
+    <style>
+      .navbar-drawer {
+        transform: translateX(100%);
+        transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .navbar-drawer.open {
+        transform: translateX(0);
+      }
+      .hamburger-line {
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        transform-origin: center;
+      }
+      .hamburger.active .line1 { transform: rotate(45deg) translateY(6px); }
+      .hamburger.active .line2 { opacity: 0; transform: scaleX(0); }
+      .hamburger.active .line3 { transform: rotate(-45deg) translateY(-6px); }
+      
+      .nav-link {
+        position: relative;
+        overflow: hidden;
+      }
+      .nav-link::before {
+        content: '';
+        position: absolute;
+        bottom: 0;
+        left: 50%;
+        width: 0;
+        height: 2px;
+        background: linear-gradient(90deg, #06b6d4, #a855f7);
+        transition: all 0.3s ease;
+        transform: translateX(-50%);
+      }
+      .nav-link:hover::before {
+        width: 80%;
+      }
+      
+      @media (max-width: 768px) {
+        #desktop-nav { display: none !important; }
+        #mobile-nav-btn { display: flex !important; }
+      }
+      @media (min-width: 769px) {
+        #mobile-nav-btn { display: none !important; }
+        #navbar-drawer { display: none !important; }
+      }
+    </style>
+
+    <header id="app-header" class="glass rounded-3xl px-4 py-3 sticky top-3 z-50">
+      <div class="flex items-center justify-between gap-3">
+        
+        <!-- ✅ KIRI: LOGO & TOMBOL BERANDA (SELALU TAMPIL SEMUA UKURAN) -->
+        <div class="flex items-center gap-3">
           {% if user %}
-            <span class="user-badge px-3 py-2 rounded-xl bg-cyan-500/20 border border-cyan-400/20 text-cyan-200 text-sm">{{ user['full_name'] }} • {{ user['role'] }}</span>
+            <a href="{{ url_for('bujp_dashboard' if user['role'] == 'anggota' else user['role'] == 'satpam' and 'satpam_page' or user['role'] == 'direktur_binmas' and 'monitor_map' or 'admin_dashboard') }}" 
+               class="home-button px-4 py-2 rounded-2xl bg-gradient-to-r from-cyan-500/20 to-purple-500/20 border border-cyan-400/30 hover:border-cyan-400/50 transition flex items-center gap-2 font-bold">
+              🏠 Beranda
+            </a>
           {% endif %}
-          {{ nav|safe }}
+          <div class="hidden sm:block">
+            <div class="app-title text-lg font-black tracking-wide">{{ app_name }}</div>
+            <div class="app-version text-xs text-slate-400">v2.0.1</div>
+          </div>
+        </div>
+
+        <!-- ✅ KANAN: USER BADGE + DESKTOP MENU -->
+        <div class="flex items-center gap-3">
+          {% if user %}
+            <span class="user-badge px-3 py-2 rounded-xl bg-cyan-500/20 border border-cyan-400/20 text-cyan-200 text-sm hidden md:block">{{ user['full_name'] }}</span>
+          {% endif %}
+          
+          <div id="desktop-nav" class="flex flex-wrap gap-2 items-center">
+            {{ nav|safe }}
+          </div>
+
+          <!-- ✅ HAMBURGER BUTTON MOBILE -->
+          <button id="mobile-nav-btn" class="hamburger w-12 h-12 rounded-2xl bg-white/5 hover:bg-white/10 transition flex flex-col items-center justify-center gap-1.5">
+            <span class="hamburger-line line1 w-5 h-0.5 bg-white rounded-full"></span>
+            <span class="hamburger-line line2 w-5 h-0.5 bg-white rounded-full"></span>
+            <span class="hamburger-line line3 w-5 h-0.5 bg-white rounded-full"></span>
+          </button>
         </div>
       </div>
     </header>
+
+    <!-- ✅ OFFCANVAS DRAWER MENU MOBILE -->
+    <div id="navbar-drawer-overlay" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 hidden" onclick="closeNavbarDrawer()"></div>
+    <div id="navbar-drawer" class="navbar-drawer fixed right-0 top-0 h-full w-[280px] max-w-[85vw] glass z-50 rounded-l-3xl p-5 flex flex-col gap-4">
+      <div class="flex justify-between items-center mb-4">
+        <div class="font-bold text-lg">Menu Navigasi</div>
+        <button onclick="closeNavbarDrawer()" class="w-10 h-10 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center">✕</button>
+      </div>
+      
+      <div class="user-badge px-3 py-3 rounded-2xl bg-cyan-500/10 border border-cyan-400/20 text-cyan-200 text-sm mb-2">
+        <div class="font-bold">{{ user['full_name'] if user else 'Guest' }}</div>
+        <div class="text-xs text-slate-400">{{ user['role'] if user else '' }}</div>
+      </div>
+
+      <div id="mobile-nav-items" class="flex flex-col gap-2">
+        {{ nav_mobile|safe }}
+      </div>
+    </div>
+
+    <script>
+      const navbarBtn = document.getElementById('mobile-nav-btn');
+      const navbarDrawer = document.getElementById('navbar-drawer');
+      const navbarOverlay = document.getElementById('navbar-drawer-overlay');
+
+      function openNavbarDrawer() {
+        navbarBtn.classList.add('active');
+        navbarDrawer.classList.add('open');
+        navbarOverlay.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+      }
+
+      function closeNavbarDrawer() {
+        navbarBtn.classList.remove('active');
+        navbarDrawer.classList.remove('open');
+        navbarOverlay.classList.add('hidden');
+        document.body.style.overflow = '';
+      }
+
+      navbarBtn.addEventListener('click', () => {
+        if (navbarDrawer.classList.contains('open')) {
+          closeNavbarDrawer();
+        } else {
+          openNavbarDrawer();
+        }
+      });
+    </script>
     <main class="py-4">{{ body|safe }}</main>
   </div>
   
@@ -1063,7 +1177,82 @@ BASE_TEMPLATE = """
 
 
 def render_page(title, body_html, user=None):
-    return render_template_string(BASE_TEMPLATE, title=title, app_name=APP_NAME, body=body_html, user=user, nav=nav_html(user))
+    # Generate nav untuk desktop dan mobile
+    nav_desktop = nav_html(user)
+    
+    # Generate nav untuk mobile dengan tampilan vertikal yang sesuai
+    nav_mobile = ""
+    if user:
+        # Hitung jumlah laporan emergency pending untuk badge notifikasi
+        emergency_pending_count = 0
+        kta_pending_count = 0
+        if user["role"] in ("admin", "direktur_binmas"):
+            try:
+                emergency_pending_count = get_db().execute("SELECT COUNT(*) FROM emergency_reports WHERE status = 'pending'").fetchone()[0]
+                kta_pending_count = get_db().execute("SELECT COUNT(*) FROM kta_perpanjangan WHERE status = 'pending'").fetchone()[0]
+            except:
+                emergency_pending_count = 0
+                kta_pending_count = 0
+
+        if user["role"] == "admin":
+            items = [
+                (url_for("admin_dashboard"), "Admin"),
+                (url_for("admin_kta_perpanjangan"), "📋 Pengajuan KTA", kta_pending_count),
+                (url_for("bujp_management"), "Manajemen BUJP"),
+                (url_for("monitor_map"), "Map Monitor"),
+                (url_for("emergency_alert_map"), "🚨 Maps Alert", emergency_pending_count),
+                (url_for("admin_emergency_reports"), "📋 Daftar Laporan Darurat"),
+                (url_for("admin_absensi_sesi"), "📅 Kelola Absensi"),
+                (url_for("admin_absensi_rekap"), "📊 Rekap Absensi"),
+                (url_for("admin_rekening_management"), "💳 Manajemen Rekening"),
+                (url_for("change_password"), "Ganti Password"),
+                (url_for("logout"), "Logout"),
+            ]
+        elif user["role"] == "direktur_binmas":
+            items = [
+                (url_for("monitor_map"), "Map Satpam"),
+                (url_for("emergency_alert_map"), "🚨 Maps Alert", emergency_pending_count),
+                (url_for("admin_emergency_reports"), "📋 Daftar Laporan Darurat"),
+                (url_for("direktur_maps_bujp"), "🗺️ Maps Perusahaan"),
+                (url_for("bujp_management"), "Manajemen BUJP"),
+                (url_for("change_password"), "Ganti Password"),
+                (url_for("logout"), "Logout"),
+            ]
+        elif user["role"] == "satpam":
+            items = [
+                (url_for("satpam_page"), "🏠 Beranda"),
+                (url_for("satpam_profile"), "👤 Profil KTA"),
+                (url_for("change_password"), "🔑 Ganti Password"),
+                (url_for("logout"), "🚪 Logout"),
+            ]
+        else:
+            items = [
+                (url_for("bujp_dashboard"), "Beranda"),
+                (url_for("change_password"), "Ganti Password"),
+                (url_for("logout"), "Logout"),
+            ]
+        nav_items = []
+        for item in items:
+            if len(item) == 3:
+                href, label, badge_count = item
+                if badge_count and badge_count > 0:
+                    nav_items.append(f'''
+                    <a href="{href}" onclick="closeNavbarDrawer()" class="px-4 py-3 rounded-xl text-sm bg-white/5 hover:bg-cyan-500/20 border border-white/10 transition block w-full">
+                        {label}
+                        <span class="emergency-badge float-right ml-2 bg-red-500 text-white text-xs font-black rounded-full w-5 h-5 inline-flex items-center justify-center">
+                            {badge_count}
+                        </span>
+                    </a>
+                    ''')
+                else:
+                    nav_items.append(f'<a href="{href}" onclick="closeNavbarDrawer()" class="px-4 py-3 rounded-xl text-sm bg-white/5 hover:bg-cyan-500/20 border border-white/10 transition block w-full">{label}</a>')
+            else:
+                href, label = item
+                nav_items.append(f'<a href="{href}" onclick="closeNavbarDrawer()" class="px-4 py-3 rounded-xl text-sm bg-white/5 hover:bg-cyan-500/20 border border-white/10 transition block w-full">{label}</a>')
+
+        nav_mobile = "".join(nav_items)
+    
+    return render_template_string(BASE_TEMPLATE, title=title, app_name=APP_NAME, body=body_html, user=user, nav=nav_desktop, nav_mobile=nav_mobile)
 
 
 def ws_url(path):
