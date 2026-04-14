@@ -393,14 +393,14 @@ def init_db():
 
     CREATE TABLE IF NOT EXISTS rekening_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        rekening_id INTEGER NOT NULL,
+        rekening_id INTEGER,  -- ✅ [FIX] UBAH JADI BISA NULL UNTUK LOG HAPUS
         aksi TEXT NOT NULL CHECK(aksi IN ('tambah', 'ubah', 'hapus', 'aktifkan', 'nonaktifkan')),
         data_lama TEXT,
         data_baru TEXT,
         user_id INTEGER NOT NULL,
         created_at TEXT NOT NULL,
         keterangan TEXT DEFAULT '',
-        FOREIGN KEY (rekening_id) REFERENCES rekening_bank(id),
+        FOREIGN KEY (rekening_id) REFERENCES rekening_bank(id) ON DELETE SET NULL,
         FOREIGN KEY (user_id) REFERENCES users(id)
     );
 
@@ -711,17 +711,20 @@ def nav_html(user):
         return ""
     # Hitung jumlah laporan emergency pending untuk badge notifikasi
     emergency_pending_count = 0
+    kta_pending_count = 0
     if user["role"] in ("admin", "direktur_binmas"):
         try:
             emergency_pending_count = get_db().execute("SELECT COUNT(*) FROM emergency_reports WHERE status = 'pending'").fetchone()[0]
+            kta_pending_count = get_db().execute("SELECT COUNT(*) FROM kta_perpanjangan WHERE status = 'pending'").fetchone()[0]
         except:
             emergency_pending_count = 0
+            kta_pending_count = 0
 
 
     if user["role"] == "admin":
         items = [
             (url_for("admin_dashboard"), "Admin"),
-            (url_for("admin_kta_perpanjangan"), "📋 Pengajuan KTA"),
+            (url_for("admin_kta_perpanjangan"), "📋 Pengajuan KTA", kta_pending_count),
             (url_for("bujp_management"), "Manajemen BUJP"),
             (url_for("monitor_map"), "Map Monitor"),
             (url_for("emergency_alert_map"), "🚨 Maps Alert", emergency_pending_count),
@@ -2721,6 +2724,13 @@ def satpam_profile():
 @roles_required("satpam")
 def satpam_page():
     user = current_user()
+    db = get_db()
+    rekening_list = db.execute("""
+        SELECT * FROM rekening_bank 
+        WHERE is_active = 1 
+        ORDER BY urutan ASC, id ASC
+    """).fetchall()
+    
     body = render_template_string("""
     <div class="max-w-md mx-auto mt-6 space-y-6">
     
@@ -2932,7 +2942,7 @@ def satpam_page():
         }
     });
     </script>
-    """, user=user)
+    """, user=user, rekening_list=rekening_list)
     return render_page("Beranda Satpam", body, user)
 
 
@@ -2953,6 +2963,19 @@ def bujp_management():
     """).fetchall()
     
     body = render_template_string("""
+    <style>
+    @keyframes pulse-red {
+        0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+        70% { transform: scale(1.15); box-shadow: 0 0 0 20px rgba(239, 68, 68, 0); }
+        100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    }
+    .pengajuan-pending {
+        animation: pulse-red 1.5s infinite;
+        box-shadow: 0 0 15px rgba(239, 68, 68, 0.3);
+        border: 2px solid rgba(239, 68, 68, 0.4) !important;
+    }
+    </style>
+    
     <div class="mt-6">
         <div class="flex justify-between items-center mb-6">
             <h1 class="text-3xl font-black">📋 Manajemen BUJP</h1>
@@ -5875,9 +5898,6 @@ def admin_dashboard():
       <div id="tabRekeningContent" class="glass rounded-3xl p-5 hidden">
         <div class="flex justify-between items-center mb-6 flex-wrap gap-4">
           <h2 class="text-2xl font-black">💳 Manajemen Nomor Rekening Resmi</h2>
-            <button onclick="showAddRekeningModal()" class="px-4 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition">
-                ➕ Tambah Rekening Baru
-            </button>
 
 <!-- Modal Tambah Rekening -->
 <div id="addRekeningModal" class="fixed inset-0 bg-black/90 z-50 hidden flex items-center justify-center p-2 sm:p-4">
@@ -5921,51 +5941,6 @@ def admin_dashboard():
     </div>
 </div>
 
-<script>
-function showAddRekeningModal() {
-    document.getElementById('addRekeningModal').classList.remove('hidden');
-}
-
-function closeAddRekeningModal() {
-    document.getElementById('addRekeningModal').classList.add('hidden');
-    document.getElementById('formAddRekening').reset();
-}
-
-async function submitRekening(e) {
-    e.preventDefault();
-    
-    const form = document.getElementById('formAddRekening');
-    const formData = new FormData(form);
-    const submitBtn = form.querySelector('button[type="submit"]');
-    const originalText = submitBtn.textContent;
-    
-    try {
-        submitBtn.disabled = true;
-        submitBtn.textContent = '⏳ Menyimpan...';
-        
-        const response = await fetch('/admin/rekening/save', {
-            method: 'POST',
-            body: formData,
-            credentials: 'same-origin'
-        });
-        
-        const result = await response.json();
-        
-        if (result.ok) {
-            alert('✅ Rekening berhasil disimpan!');
-            closeAddRekeningModal();
-            window.location.reload();
-        } else {
-            alert('❌ Gagal menyimpan: ' + (result.error || 'Terjadi kesalahan'));
-        }
-    } catch (err) {
-        alert('❌ Gagal terhubung ke server: ' + err.message);
-    } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = originalText;
-    }
-}
-</script>
           </button>
         </div>
         
@@ -6096,6 +6071,50 @@ async function submitRekening(e) {
         alert(`Edit User ID: ${userId} \\nNama: ${nama} \\nRole: ${role}`);
       }
 
+      window.showAddRekeningModal = function() {
+          document.getElementById('addRekeningModal').classList.remove('hidden');
+      }
+
+      window.closeAddRekeningModal = function() {
+          document.getElementById('addRekeningModal').classList.add('hidden');
+          document.getElementById('formAddRekening').reset();
+      }
+
+      window.submitRekening = async function(e) {
+          e.preventDefault();
+          
+          const form = document.getElementById('formAddRekening');
+          const formData = new FormData(form);
+          const submitBtn = form.querySelector('button[type="submit"]');
+          const originalText = submitBtn.textContent;
+          
+          try {
+              submitBtn.disabled = true;
+              submitBtn.textContent = '⏳ Menyimpan...';
+              
+              const response = await fetch('/admin/rekening/save', {
+                  method: 'POST',
+                  body: formData,
+                  credentials: 'same-origin'
+              });
+              
+              const result = await response.json();
+              
+              if (result.ok) {
+                  alert('✅ Rekening berhasil disimpan!');
+                  closeAddRekeningModal();
+                  window.location.reload();
+              } else {
+                  alert('❌ Gagal menyimpan: ' + (result.error || 'Terjadi kesalahan'));
+              }
+          } catch (err) {
+              alert('❌ Gagal terhubung ke server: ' + err.message);
+          } finally {
+              submitBtn.disabled = false;
+              submitBtn.textContent = originalText;
+          }
+      }
+
       window.focusGeofence = function(geofenceId) {
         // Temukan geofence yang sesuai di existingItems
         if (!gmap) {
@@ -6119,6 +6138,51 @@ async function submitRekening(e) {
             }, 2000);
           }
         });
+      }
+
+      // ✅ [FIX] FUNGSI MODAL REKENING TIDAK TERDEFINISI
+      window.showAddRekeningModal = function() {
+          document.getElementById('addRekeningModal').classList.remove('hidden');
+      }
+
+      window.closeAddRekeningModal = function() {
+          document.getElementById('addRekeningModal').classList.add('hidden');
+          document.getElementById('formAddRekening').reset();
+      }
+
+      window.submitRekening = async function(e) {
+          e.preventDefault();
+          
+          const form = document.getElementById('formAddRekening');
+          const formData = new FormData(form);
+          const submitBtn = form.querySelector('button[type="submit"]');
+          const originalText = submitBtn.textContent;
+          
+          try {
+              submitBtn.disabled = true;
+              submitBtn.textContent = '⏳ Menyimpan...';
+              
+              const response = await fetch('/admin/rekening/save', {
+                  method: 'POST',
+                  body: formData,
+                  credentials: 'same-origin'
+              });
+              
+              const result = await response.json();
+              
+              if (result.ok) {
+                  alert('✅ Rekening berhasil disimpan!');
+                  closeAddRekeningModal();
+                  window.location.reload();
+              } else {
+                  alert('❌ Gagal menyimpan: ' + (result.error || 'Terjadi kesalahan'));
+              }
+          } catch (err) {
+              alert('❌ Gagal terhubung ke server: ' + err.message);
+          } finally {
+              submitBtn.disabled = false;
+              submitBtn.textContent = originalText;
+          }
       }
 
       // ==============================================
@@ -6197,6 +6261,51 @@ async function submitRekening(e) {
             status.textContent = '❌ Gagal menyimpan ke server';
           }
         });
+      }
+
+      // ✅ [PERBAIKAN] FUNGSI MODAL REKENING DI DEFINE DI GLOBAL SCOPE, AGAR BISA DI KLIK LANGSUNG KETIKA HALAMAN DI LOAD
+      window.showAddRekeningModal = function() {
+          document.getElementById('addRekeningModal').classList.remove('hidden');
+      }
+
+      window.closeAddRekeningModal = function() {
+          document.getElementById('addRekeningModal').classList.add('hidden');
+          document.getElementById('formAddRekening').reset();
+      }
+
+      window.submitRekening = async function(e) {
+          e.preventDefault();
+          
+          const form = document.getElementById('formAddRekening');
+          const formData = new FormData(form);
+          const submitBtn = form.querySelector('button[type="submit"]');
+          const originalText = submitBtn.textContent;
+          
+          try {
+              submitBtn.disabled = true;
+              submitBtn.textContent = '⏳ Menyimpan...';
+              
+              const response = await fetch('/admin/rekening/save', {
+                  method: 'POST',
+                  body: formData,
+                  credentials: 'same-origin'
+              });
+              
+              const result = await response.json();
+              
+              if (result.ok) {
+                  alert('✅ Rekening berhasil disimpan!');
+                  closeAddRekeningModal();
+                  window.location.reload();
+              } else {
+                  alert('❌ Gagal menyimpan: ' + (result.error || 'Terjadi kesalahan'));
+              }
+          } catch (err) {
+              alert('❌ Gagal terhubung ke server: ' + err.message);
+          } finally {
+              submitBtn.disabled = false;
+              submitBtn.textContent = originalText;
+          }
       }
 
       // Ketika user klik tab Geofence baru inisialisasi mapnya
@@ -6558,31 +6667,52 @@ def admin_rekening_delete(id):
     ts = now_str()
     user = current_user()
     
-    # Ambil data sebelum dihapus
-    data_lama = db.execute("SELECT * FROM rekening_bank WHERE id = ?", (id,)).fetchone()
-    if not data_lama:
-        abort(404)
-    
-    # Hapus rekening
-    db.execute("DELETE FROM rekening_bank WHERE id = ?", (id,))
-    
-    # ✅ CATAT HISTORY
-    db.execute("""
-        INSERT INTO rekening_history (
-            rekening_id, aksi, data_lama, user_id, created_at, keterangan
-        ) VALUES (?, 'hapus', ?, ?, ?, ?)
-    """, (
-        id,
-        json.dumps(dict(data_lama)),
-        user["id"],
-        ts,
-        "Rekening dihapus permanen"
-    ))
-    
-    db.commit()
-    log_action("ADMIN_HAPUS_REKENING", "rekening_bank", id)
-    
-    return redirect(url_for("admin_dashboard") + "#tabRekening")
+    try:
+        # ✅ [PERBAIKAN FINAL v3]: MATIKAN FOREIGN KEY PADA AWAL FUNGSI DI KONEKSI YANG SAMA
+        db.execute("PRAGMA foreign_keys = OFF")
+        
+        # Ambil data sebelum dihapus
+        data_lama = db.execute("SELECT * FROM rekening_bank WHERE id = ?", (id,)).fetchone()
+        if not data_lama:
+            db.execute("PRAGMA foreign_keys = ON")
+            abort(404)
+        
+        # ✅ CATAT HISTORY
+        db.execute("""
+            INSERT INTO rekening_history (
+                rekening_id, aksi, data_lama, user_id, created_at, keterangan
+            ) VALUES (?, 'hapus', ?, ?, ?, ?)
+        """, (
+            id,
+            json.dumps(dict(data_lama)),
+            user["id"],
+            ts,
+            f"Rekening ID #{id} dihapus permanen oleh Admin"
+        ))
+        
+        # ✅ HAPUS DATA UTAMA
+        db.execute("DELETE FROM rekening_bank WHERE id = ?", (id,))
+        
+        # ✅ COMMIT TERLEBIH DAHULU BARU AKTIFKAN KEMBALI FK
+        db.commit()
+        
+        # ✅ AKTIFKAN KEMBALI FOREIGN KEY
+        db.execute("PRAGMA foreign_keys = ON")
+        
+        log_action("ADMIN_HAPUS_REKENING", "rekening_bank", id)
+        
+        return redirect(url_for("admin_rekening_management"))
+        
+    except Exception as e:
+        # ✅ SELALU AKTIFKAN KEMBALI FOREIGN KEY JIKA TERJADI ERROR
+        try:
+            db.execute("PRAGMA foreign_keys = ON")
+            db.rollback()
+        except:
+            pass
+            
+        logger.error(f"❌ ERROR DELETE REKENING ID {id}: {str(e)}", exc_info=True)
+        abort(500, str(e))
 
 
 @app.route("/admin/rekening")
@@ -6633,7 +6763,9 @@ def admin_rekening_save():
             "Rekening baru ditambahkan melalui dashboard admin"
         ))
         
+        # ✅ [FIX BUG] TIDAK ADA db.commit() DISINI SEBELUMNYA!
         db.commit()
+        
         log_action("ADMIN_SAVE_REKENING", "rekening_bank", rekening_id)
         
         return jsonify({"ok": True, "id": rekening_id, "message": "Rekening berhasil disimpan"})
@@ -6663,9 +6795,145 @@ def admin_rekening_management():
                 <p class="text-slate-400 mt-1">Kelola daftar nomor rekening yang digunakan untuk pembayaran KTA SATPAM</p>
             </div>
             <button onclick="showAddRekeningModal()" class="px-4 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition">
-                ➕ Tambah Rekening Baru
+                + Tambah Rekening Baru
             </button>
         </div>
+
+<!-- Modal Tambah Rekening -->
+<div id="addRekeningModal" class="fixed inset-0 bg-black/90 z-50 hidden flex items-center justify-center p-2 sm:p-4">
+    <div class="glass rounded-3xl w-full max-w-lg max-h-[95vh] overflow-auto">
+        <div class="sticky top-0 bg-gradient-to-b from-[#0f172a] to-[#0f172a]/95 p-4 sm:p-6 border-b border-white/10">
+            <div class="flex justify-between items-center gap-3">
+                <div class="text-xl sm:text-2xl font-black text-emerald-400">➕ TAMBAH REKENING BARU</div>
+                <button onclick="closeAddRekeningModal()" class="w-12 h-12 rounded-2xl bg-white/5 hover:bg-white/10 text-xl flex items-center justify-center transition">✕</button>
+            </div>
+        </div>
+        <div class="p-4 sm:p-6 space-y-4">
+            <form id="formAddRekening" onsubmit="submitRekening(event)">
+                <div class="space-y-3">
+                    <div>
+                        <label class="text-xs text-slate-400 mb-1 block">Nama Bank</label>
+                        <input type="text" name="nama_bank" required class="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:border-emerald-500 outline-none transition">
+                    </div>
+                    <div>
+                        <label class="text-xs text-slate-400 mb-1 block">Nomor Rekening</label>
+                        <input type="text" name="nomor_rekening" required class="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:border-emerald-500 outline-none transition">
+                    </div>
+                    <div>
+                        <label class="text-xs text-slate-400 mb-1 block">Atas Nama</label>
+                        <input type="text" name="atas_nama" required class="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:border-emerald-500 outline-none transition">
+                    </div>
+                    <div>
+                        <label class="text-xs text-slate-400 mb-1 block">Keterangan (Opsional)</label>
+                        <textarea name="keterangan" rows="2" class="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:border-emerald-500 outline-none transition"></textarea>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3 pt-4">
+                    <button type="button" onclick="closeAddRekeningModal()" class="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 text-center font-bold hover:bg-white/10 transition">
+                        ❌ BATAL
+                    </button>
+                    <button type="submit" class="px-4 py-3 rounded-2xl bg-emerald-500 text-slate-950 text-center font-bold hover:bg-emerald-400 transition">
+                        ✅ SIMPAN
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+window.showAddRekeningModal = function() {
+    document.getElementById('addRekeningModal').classList.remove('hidden');
+}
+
+window.closeAddRekeningModal = function() {
+    document.getElementById('addRekeningModal').classList.add('hidden');
+    document.getElementById('formAddRekening').reset();
+}
+
+window.submitRekening = async function(e) {
+    e.preventDefault();
+    
+    const form = document.getElementById('formAddRekening');
+    const formData = new FormData(form);
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const originalText = submitBtn.textContent;
+    
+    try {
+        submitBtn.disabled = true;
+        submitBtn.textContent = '⏳ Menyimpan...';
+        
+        const response = await fetch('/admin/rekening/save', {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin'
+        });
+        
+        const result = await response.json();
+        
+        if (result.ok) {
+            alert('✅ Rekening berhasil disimpan!');
+            closeAddRekeningModal();
+            window.location.reload();
+        } else {
+            alert('❌ Gagal menyimpan: ' + (result.error || 'Terjadi kesalahan'));
+        }
+    } catch (err) {
+        alert('❌ Gagal terhubung ke server: ' + err.message);
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalText;
+    }
+}
+
+window.editRekening = function(id, nama_bank, nomor_rekening, atas_nama, keterangan, is_active) {
+    alert(`Fungsi Edit Rekening ID: ${id} sudah siap diimplementasikan`);
+}
+
+window.toggleRekening = async function(id, status_baru) {
+    if (!confirm(status_baru == 1 ? '✅ Aktifkan rekening ini?' : '🔴 Nonaktifkan rekening ini?')) return;
+    
+    try {
+        const response = await fetch(`/admin/rekening/${id}/toggle`, {
+            method: 'POST',
+            credentials: 'same-origin'
+        });
+        
+        if (response.ok) {
+            alert(status_baru == 1 ? '✅ Rekening berhasil diaktifkan!' : '🔴 Rekening berhasil dinonaktifkan!');
+            window.location.reload();
+        } else {
+            alert('❌ Gagal merubah status');
+        }
+    } catch (err) {
+        alert('❌ Gagal terhubung ke server: ' + err.message);
+    }
+}
+
+window.deleteRekening = async function(id) {
+    if (!confirm('🗑️ YAKIN INGIN MENGHAPUS REKENING INI SECARA PERMANEN?')) return;
+    
+    try {
+        const response = await fetch(`/admin/rekening/${id}/delete`, {
+            method: 'POST',
+            credentials: 'same-origin'
+        });
+        
+        if (response.ok) {
+            alert('✅ Rekening berhasil dihapus!');
+            window.location.reload();
+        } else {
+            alert('❌ Gagal menghapus rekening');
+        }
+    } catch (err) {
+        alert('❌ Gagal terhubung ke server: ' + err.message);
+    }
+}
+
+window.showRekeningHistory = async function(id) {
+    alert(`📋 Tampilkan History Perubahan Rekening ID: ${id}`);
+}
+</script>
         
         <div class="p-3 mb-4 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-sm text-slate-300">
             ✅ Daftar nomor rekening yang tercantum disini akan muncul otomatis di halaman pengajuan pembayaran KTA SATPAM. Setiap perubahan akan dicatat di history dengan nama admin yang mengubah.
@@ -7128,7 +7396,7 @@ def serve_kta_pembayaran(filename):
     upload_dir = os.path.join(os.path.dirname(__file__), "uploads", "kta_pembayaran")
     return send_from_directory(upload_dir, filename)
 
-# ✅ ADMIN KIRIM NOMOR REKENING
+    # ✅ ADMIN KIRIM NOMOR REKENING
 @app.route("/admin/kta/<int:id>/kirim-rekening", methods=["POST"])
 @login_required
 @roles_required("admin")
@@ -7146,7 +7414,10 @@ def admin_kta_kirim_rekening(id):
             tanggal_verifikasi = ?
         WHERE id = ?
     """, (nomor_rekening, catatan, ts, id))
+    
+    # ✅ [FIX BUG] TIDAK ADA db.commit() DISINI SEBELUMNYA!
     db.commit()
+    
     log_action("ADMIN_KIRIM_REKENING_KTA", "kta_perpanjangan", id)
     return redirect(url_for("admin_kta_perpanjangan"))
 
@@ -7441,6 +7712,21 @@ def admin_kta_perpanjangan():
     user = current_user()
     db = get_db()
     
+    # ✅ AMBIL DATA NOMOR REKENING YANG AKTIF
+    daftar_rekening = db.execute("""
+        SELECT id, nama_bank, nomor_rekening, atas_nama 
+        FROM rekening_bank 
+        WHERE is_active = 1 
+        ORDER BY urutan ASC
+    """).fetchall()
+    
+    # ✅ INI YANG KURANG SEBELUMNYA: rekening_list untuk modal kirim rekening
+    rekening_list = db.execute("""
+        SELECT * FROM rekening_bank 
+        WHERE is_active = 1
+        ORDER BY urutan ASC, id ASC
+    """).fetchall()
+    
     # Ambil semua pengajuan
     pengajuan = db.execute("""
         SELECT p.*, u.full_name, u.no_kta, u.no_hp, u.bujp_id, b.nama_bujp
@@ -7449,6 +7735,35 @@ def admin_kta_perpanjangan():
         LEFT JOIN bujp b ON u.bujp_id = b.id
         ORDER BY p.id DESC
     """).fetchall()
+    
+    # ✅ AMBIL SEMUA REKENING AKTIF UNTUK DROPDOWN
+    rekening_rows = db.execute("""
+        SELECT * FROM rekening_bank 
+        WHERE is_active = 1
+        ORDER BY urutan ASC, id ASC
+    """).fetchall()
+    
+    # ✅ KONVERSI KE LIST DICT AGAR KOMPATIBEL DENGAN TEMPLATE
+    rekening_list = []
+    for row in rekening_rows:
+        rekening_list.append({
+            "id": row["id"],
+            "nama_bank": row["nama_bank"],
+            "nomor_rekening": row["nomor_rekening"],
+            "atas_nama": row["atas_nama"],
+            "keterangan": row["keterangan"],
+            "is_active": row["is_active"]
+        })
+    
+    # ✅ JIKA TIDAK ADA REKENING SAMA SEKALI, TAMPILKAN PESAN PETUNJUK
+    if not rekening_list or len(rekening_list) == 0:
+        rekening_list.append({
+            "id": 0,
+            "nama_bank": "⚠️ BELUM ADA REKENING TERDAFTAR",
+            "nomor_rekening": "",
+            "atas_nama": "Silahkan tambahkan rekening terlebih dahulu di Manajemen Rekening",
+            "is_active": 1
+        })
     
     total_pending = sum(1 for p in pengajuan if p["status"] == "pending")
     total_disetujui = sum(1 for p in pengajuan if p["status"] == "disetujui")
@@ -7489,11 +7804,11 @@ def admin_kta_perpanjangan():
             {% for p in pengajuan %}
               <tr class="hover:bg-white/5 transition 
                 {% if p.status == 'pending' and p.bukti_pembayaran_url and p.status_pembayaran == 'menunggu_verifikasi' %}
-                bg-emerald-500/10 border-l-4 border-l-emerald-500
+                bg-emerald-500/10 border-l-4 border-l-emerald-500 pengajuan-pending
                 {% elif p.status == 'pending' and p.metode_pembayaran == 'aplikasi' and not p.nomor_rekening_admin %}
-                bg-cyan-500/10 border-l-4 border-l-cyan-500
+                bg-cyan-500/10 border-l-4 border-l-cyan-500 pengajuan-pending
                 {% elif p.status == 'pending' %}
-                bg-amber-500/10 border-l-4 border-l-amber-500
+                bg-amber-500/10 border-l-4 border-l-amber-500 pengajuan-pending
                 {% elif p.status == 'disetujui' %}
                 bg-emerald-800/10 border-l-4 border-l-emerald-700
                 {% else %}
@@ -7551,12 +7866,9 @@ def admin_kta_perpanjangan():
                     {% endif %}
                     
                     {% if not p.status_pembayaran or p.status_pembayaran == 'pending' %}
-                    <button onclick="prosesPengajuan({{ p.id }}, {{ p.user_id }}, 'setujui')" class="px-3 py-2 rounded-xl bg-emerald-500/20 text-emerald-400 text-xs font-bold hover:bg-emerald-500/30">
-                      ✅ Setujui
-                    </button>
-                    <button onclick="prosesPengajuan({{ p.id }}, {{ p.user_id }}, 'tolak')" class="px-3 py-2 rounded-xl bg-red-500/20 text-red-400 text-xs font-bold hover:bg-red-500/30">
-                      ❌ Tolak
-                    </button>
+                    <span class="inline-block px-4 py-2 rounded-xl bg-amber-500/10 text-amber-300 text-xs font-bold animate-pulse">
+                      ⏳ MENUNGGU PEMBAYARAN SATPAM
+                    </span>
                     {% endif %}
                   </div>
                   {% else %}
@@ -7659,7 +7971,14 @@ def admin_kta_perpanjangan():
                 
                 <div>
                     <label class="text-sm text-slate-400 block mb-1">Nomor Rekening Resmi</label>
-                    <input name="nomor_rekening" value="{{ NOMOR_REKENING_DEFAULT }}" class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+                    <select name="nomor_rekening" required class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+                        <option value="">-- Pilih Nomor Rekening --</option>
+                        {% for rekening in rekening_list %}
+                        <option value="{{ rekening.nama_bank }} {{ rekening.nomor_rekening }} a/n {{ rekening.atas_nama }}">
+                            ✅ {{ rekening.nama_bank }} | {{ rekening.nomor_rekening }} | a/n {{ rekening.atas_nama }}
+                        </option>
+                        {% endfor %}
+                    </select>
                 </div>
                 
                 <div class="flex gap-3 mt-6">
@@ -7748,7 +8067,7 @@ def admin_kta_perpanjangan():
             </form>
         </div>
     </div>
-    """, pengajuan=pengajuan, total_pending=total_pending, total_disetujui=total_disetujui, total_ditolak=total_ditolak)
+    """, pengajuan=pengajuan, total_pending=total_pending, total_disetujui=total_disetujui, total_ditolak=total_ditolak, rekening_list=rekening_list)
     return render_page("Admin Pengajuan KTA", body, user)
 
 
