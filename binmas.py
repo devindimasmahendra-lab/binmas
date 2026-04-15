@@ -423,6 +423,22 @@ def init_db():
         FOREIGN KEY (user_id) REFERENCES users(id),
         FOREIGN KEY (handled_by) REFERENCES users(id)
     );
+
+    CREATE TABLE IF NOT EXISTS admin_notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER NOT NULL,
+        target_user_id INTEGER,
+        target_role TEXT,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        type TEXT DEFAULT 'info' CHECK(type IN ('info', 'warning', 'important', 'emergency')),
+        is_read INTEGER DEFAULT 0,
+        read_at TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT,
+        FOREIGN KEY (admin_id) REFERENCES users(id),
+        FOREIGN KEY (target_user_id) REFERENCES users(id)
+    );
     """)
     db.commit()
 
@@ -5776,8 +5792,17 @@ def monitor_map():
       border: 1px solid rgba(255,255,255,.08);
       transition: .2s ease;
     }
-    .satpam-card.online { box-shadow: inset 3px 0 0 #22c55e; }
+    .satpam-card.online { 
+      box-shadow: inset 5px 0 0 #16a34a, 0 0 20px rgba(22, 163, 74, 0.35);
+      background: linear-gradient(90deg, rgba(22, 163, 74, 0.08) 0%, transparent 25%);
+      border: 1px solid rgba(34, 197, 94, 0.3) !important;
+    }
     .satpam-card.offline { box-shadow: inset 3px 0 0 #f97316; }
+    
+    @keyframes pulse-glow {
+      0%, 100% { opacity: 1; box-shadow: 0 0 4px #22c55e; }
+      50% { opacity: 0.6; box-shadow: 0 0 12px #22c55e, 0 0 20px #22c55e; }
+    }
     .satpam-card:hover { transform: translateX(3px); border-color: rgba(34,211,238,.25); }
     </style>
 
@@ -5940,12 +5965,14 @@ def monitor_map():
       function cardHtml(row) {
         const when = row.created_at || '-';
         const online = row.online ? 'online' : 'offline';
-        const onlineText = row.online ? '<span class="text-emerald-300 font-bold">✅ ONLINE</span>' : '<span class="text-slate-500">⚪ Offline</span>';
+        const onlineText = row.online ? 
+          '<span class="text-emerald-300 font-extrabold flex items-center gap-2 text-sm"><span class="w-3 h-3 rounded-full bg-emerald-400" style="animation: pulse-glow 1.2s infinite"></span> 🟢 <b>SEDANG ONLINE AKTIF</b></span>' : 
+          '<span class="text-slate-500 flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-slate-600"></span> ⚪ Offline</span>';
         const geofence = row.geofences && row.geofences.length ? row.geofences.join(', ') : 'Di luar area geofence';
         return `
           <div class="satpam-card rounded-2xl p-4 ${online}">
             <div class="font-black text-lg">${row.full_name}</div>
-            <div class="text-xs text-slate-400 mb-2">@${row.username} • ${onlineText}</div>
+            <div class="text-xs text-slate-400 mb-3">@${row.username} • ${onlineText}</div>
             <div class="text-xs space-y-1 text-slate-300">
               <div>🧭 ${Number(row.lat).toFixed(6)}, ${Number(row.lng).toFixed(6)}</div>
               <div>📡 Akurasi: ${Number(row.accuracy || 0).toFixed(1)} meter</div>
@@ -9172,6 +9199,456 @@ def admin_emergency_reports():
     """, emergency_list=emergency_list)
     
     return render_page("Daftar Laporan Darurat", body, user)
+
+
+# ==============================================
+# ✅ SISTEM NOTIFIKASI ADMIN
+# ==============================================
+
+# ✅ API NOTIFIKASI USER
+@app.route("/api/notifications", methods=["GET"])
+@login_required
+def api_get_notifications():
+    user = current_user()
+    db = get_db()
+    
+    # Ambil notifikasi untuk user ini
+    notifications = db.execute("""
+        SELECT n.*, u.full_name AS admin_nama
+        FROM admin_notifications n
+        LEFT JOIN users u ON u.id = n.admin_id
+        WHERE (n.target_user_id = ? OR n.target_role = ? OR n.target_role IS NULL)
+        ORDER BY n.created_at DESC
+        LIMIT 50
+    """, (user["id"], user["role"])).fetchall()
+    
+    return jsonify([dict(n) for n in notifications])
+
+@app.route("/api/notifications/unread-count", methods=["GET"])
+@login_required
+def api_notifications_unread_count():
+    user = current_user()
+    db = get_db()
+    
+    count = db.execute("""
+        SELECT COUNT(*) FROM admin_notifications
+        WHERE (target_user_id = ? OR target_role = ? OR target_role IS NULL)
+        AND is_read = 0
+    """, (user["id"], user["role"])).fetchone()[0]
+    
+    return jsonify({"count": count})
+
+@app.route("/api/notifications/<int:id>/read", methods=["POST"])
+@login_required
+def api_mark_notification_read(id):
+    user = current_user()
+    db = get_db()
+    
+    db.execute("""
+        UPDATE admin_notifications 
+        SET is_read = 1, read_at = ? 
+        WHERE id = ? 
+        AND (target_user_id = ? OR target_role = ? OR target_role IS NULL)
+    """, (now_str(), id, user["id"], user["role"]))
+    db.commit()
+    
+    return jsonify({"ok": True})
+
+# ✅ API ADMIN KIRIM NOTIFIKASI
+@app.route("/api/admin/notifications/send", methods=["POST"])
+@login_required
+@roles_required("admin", "direktur_binmas")
+def api_admin_send_notification():
+    admin = current_user()
+    db = get_db()
+    data = request.get_json(silent=True) or {}
+    
+    target_user_id = data.get("target_user_id")
+    target_role = data.get("target_role")
+    title = data.get("title", "").strip()
+    message = data.get("message", "").strip()
+    notif_type = data.get("type", "info")
+    
+    if not title or not message:
+        return jsonify({"ok": False, "error": "Judul dan pesan wajib diisi"}), 400
+    
+    if notif_type not in ('info', 'warning', 'important', 'emergency'):
+        notif_type = 'info'
+    
+    ts = now_str()
+    cur = db.execute("""
+        INSERT INTO admin_notifications (
+            admin_id, target_user_id, target_role, title, message, type, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        admin["id"],
+        target_user_id,
+        target_role,
+        title,
+        message,
+        notif_type,
+        ts
+    ))
+    notif_id = cur.lastrowid
+    db.commit()
+    
+    # ✅ BROADCAST NOTIFIKASI REAL-TIME KE SEMUA USER ONLINE
+    notification_payload = {
+        "type": "admin_notification",
+        "notification_id": notif_id,
+        "title": title,
+        "message": message,
+        "notif_type": notif_type,
+        "admin_nama": admin["full_name"],
+        "created_at": ts
+    }
+    
+    # Kirim ke semua monitor dan user yang online
+    broadcast_monitors(notification_payload)
+    
+    log_action("ADMIN_SEND_NOTIFICATION", "admin_notifications", notif_id, f"target_user={target_user_id};target_role={target_role}")
+    
+    return jsonify({"ok": True, "id": notif_id})
+
+# ✅ HALAMAN NOTIFIKASI USER
+@app.route("/notifications")
+@login_required
+def notifications_page():
+    user = current_user()
+    
+    body = render_template_string("""
+    <div class="max-w-2xl mx-auto mt-6 space-y-6">
+      
+      <div class="glass rounded-3xl p-6">
+        <div class="flex justify-between items-center mb-6">
+          <h1 class="text-2xl font-black">🔔 Notifikasi Anda</h1>
+          <button onclick="markAllRead()" class="px-4 py-2 rounded-xl bg-cyan-500/20 text-cyan-300 text-sm font-bold">
+            Tandai Semua Dibaca
+          </button>
+        </div>
+        
+        <div id="notificationsList" class="space-y-4">
+          <div class="text-center py-12 text-slate-400">
+            <div class="text-4xl mb-3 animate-pulse">⏳</div>
+            <div>Memuat notifikasi...</div>
+          </div>
+        </div>
+      </div>
+      
+    </div>
+    
+    <script>
+    async function loadNotifications() {
+      try {
+        const res = await fetch('/api/notifications');
+        const notifications = await res.json();
+        const el = document.getElementById('notificationsList');
+        
+        if (notifications.length === 0) {
+          el.innerHTML = `
+            <div class="text-center py-12 text-slate-400">
+              <div class="text-4xl mb-3">✅</div>
+              <div>Tidak ada notifikasi</div>
+            </div>
+          `;
+          return;
+        }
+        
+        el.innerHTML = notifications.map(n => `
+          <div class="p-4 rounded-2xl ${n.is_read ? 'bg-white/5' : 'bg-cyan-500/10 border border-cyan-500/20'}">
+            <div class="flex justify-between items-start gap-4">
+              <div class="flex-1">
+                <div class="flex items-center gap-3 mb-2">
+                  <span class="px-2 py-1 rounded-lg ${
+                    n.type === 'emergency' ? 'bg-red-500/20 text-red-300' :
+                    n.type === 'important' ? 'bg-amber-500/20 text-amber-300' :
+                    n.type === 'warning' ? 'bg-orange-500/20 text-orange-300' :
+                    'bg-cyan-500/20 text-cyan-300'
+                  } text-xs font-bold">${n.type.toUpperCase()}</span>
+                  <span class="text-xs text-slate-400">${n.created_at}</span>
+                  ${n.admin_nama ? `<span class="text-xs text-slate-400">Oleh: ${n.admin_nama}</span>` : ''}
+                </div>
+                <div class="font-bold text-lg mb-1">${n.title}</div>
+                <div class="text-sm text-slate-300">${n.message}</div>
+              </div>
+              ${!n.is_read ? `
+                <button onclick="markRead(${n.id})" class="px-3 py-1 rounded-xl bg-cyan-500 text-slate-950 text-xs font-bold flex-shrink-0">
+                  ✓ Dibaca
+                </button>
+              ` : ''}
+            </div>
+          </div>
+        `).join('');
+        
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    
+    async function markRead(id) {
+      await fetch(`/api/notifications/${id}/read`, { method: 'POST' });
+      loadNotifications();
+      updateBadgeCount();
+    }
+    
+    async function markAllRead() {
+      const res = await fetch('/api/notifications');
+      const notifications = await res.json();
+      for (const n of notifications) {
+        if (!n.is_read) {
+          await fetch(`/api/notifications/${n.id}/read`, { method: 'POST' });
+        }
+      }
+      loadNotifications();
+      updateBadgeCount();
+    }
+    
+    async function updateBadgeCount() {
+      try {
+        const res = await fetch('/api/notifications/unread-count');
+        const data = await res.json();
+        const badge = document.getElementById('notifBadgeCount');
+        if (badge) {
+          badge.textContent = data.count;
+          badge.style.display = data.count > 0 ? 'flex' : 'none';
+        }
+      } catch (e) {}
+    }
+    
+    window.addEventListener('load', () => {
+      loadNotifications();
+      updateBadgeCount();
+      setInterval(updateBadgeCount, 30000);
+    });
+    </script>
+    """, user=user)
+    
+    return render_page("Notifikasi", body, user)
+
+# ✅ HALAMAN ADMIN KIRIM NOTIFIKASI
+@app.route("/admin/send-notification")
+@login_required
+@roles_required("admin", "direktur_binmas")
+def admin_send_notification():
+    user = current_user()
+    db = get_db()
+    
+    users = db.execute("SELECT id, full_name, role FROM users WHERE is_active = 1 ORDER BY full_name ASC").fetchall()
+    
+    body = render_template_string("""
+    <div class="max-w-2xl mx-auto mt-6 space-y-6">
+      
+      <div class="glass rounded-3xl p-6">
+        <h1 class="text-2xl font-black mb-6">📤 Kirim Notifikasi ke User</h1>
+        
+        <form id="sendNotifForm" class="space-y-4">
+          <div>
+            <label class="text-sm text-slate-400 block mb-2">Tujuan Notifikasi</label>
+            <select id="targetType" onchange="toggleTarget()" class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+              <option value="all">✅ Kirim ke SEMUA USER</option>
+              <option value="role">Kirim ke Role Tertentu</option>
+              <option value="user">Kirim ke User Individu</option>
+            </select>
+          </div>
+          
+          <div id="targetRoleContainer" class="hidden">
+            <label class="text-sm text-slate-400 block mb-2">Pilih Role</label>
+            <select id="targetRole" class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+              <option value="satpam">👮 Satpam</option>
+              <option value="anggota">🎖️ Anggota / BUJP</option>
+              <option value="admin">⚙️ Admin</option>
+              <option value="direktur_binmas">👨‍💼 Direktur</option>
+            </select>
+          </div>
+          
+          <div id="targetUserContainer" class="hidden">
+            <label class="text-sm text-slate-400 block mb-2">Pilih User</label>
+            <select id="targetUser" class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+              {% for u in users %}
+              <option value="{{ u.id }}">{{ u.full_name }} ({{ u.role }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          
+          <div>
+            <label class="text-sm text-slate-400 block mb-2">Tipe Notifikasi</label>
+            <select id="notifType" class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none">
+              <option value="info">ℹ️ Informasi</option>
+              <option value="warning">⚠️ Peringatan</option>
+              <option value="important">📢 Penting</option>
+              <option value="emergency">🚨 Darurat</option>
+            </select>
+          </div>
+          
+          <div>
+            <label class="text-sm text-slate-400 block mb-2">Judul Notifikasi</label>
+            <input id="notifTitle" type="text" required class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none" placeholder="Judul pesan">
+          </div>
+          
+          <div>
+            <label class="text-sm text-slate-400 block mb-2">Pesan Notifikasi</label>
+            <textarea id="notifMessage" rows="4" required class="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 outline-none" placeholder="Tulis pesan notifikasi disini..."></textarea>
+          </div>
+          
+          <button type="submit" id="submitBtn" class="w-full rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black px-5 py-4">
+            📤 KIRIM NOTIFIKASI
+          </button>
+        </form>
+      </div>
+      
+    </div>
+    
+    <script>
+    function toggleTarget() {
+      const type = document.getElementById('targetType').value;
+      document.getElementById('targetRoleContainer').classList.toggle('hidden', type !== 'role');
+      document.getElementById('targetUserContainer').classList.toggle('hidden', type !== 'user');
+    }
+    
+    document.getElementById('sendNotifForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const btn = document.getElementById('submitBtn');
+      btn.disabled = true;
+      btn.textContent = '⏳ Mengirim...';
+      
+      try {
+        const targetType = document.getElementById('targetType').value;
+        const data = {
+          title: document.getElementById('notifTitle').value,
+          message: document.getElementById('notifMessage').value,
+          type: document.getElementById('notifType').value,
+          target_user_id: null,
+          target_role: null
+        };
+        
+        if (targetType === 'role') {
+          data.target_role = document.getElementById('targetRole').value;
+        } else if (targetType === 'user') {
+          data.target_user_id = parseInt(document.getElementById('targetUser').value);
+        }
+        
+        const res = await fetch('/api/admin/notifications/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        
+        const result = await res.json();
+        
+        if (result.ok) {
+          alert('✅ Notifikasi berhasil dikirim!');
+          document.getElementById('sendNotifForm').reset();
+        } else {
+          alert('❌ Gagal mengirim: ' + (result.error || 'Terjadi kesalahan'));
+        }
+        
+      } catch (err) {
+        alert('❌ Gagal terhubung ke server');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '📤 KIRIM NOTIFIKASI';
+      }
+    });
+    </script>
+    """, user=user, users=users)
+    
+    return render_page("Kirim Notifikasi", body, user)
+
+# ✅ TAMBAH MENU NOTIFIKASI DI NAVBAR SEMUA ROLE
+def nav_html(user):
+    if not user:
+        return ""
+    
+    db = get_db()
+    # Hitung notifikasi yang belum dibaca
+    unread_notif = 0
+    try:
+        unread_notif = db.execute("""
+            SELECT COUNT(*) FROM admin_notifications
+            WHERE (target_user_id = ? OR target_role = ? OR target_role IS NULL)
+            AND is_read = 0
+        """, (user["id"], user["role"])).fetchone()[0]
+    except:
+        pass
+        
+    # Hitung jumlah laporan emergency pending untuk badge notifikasi
+    emergency_pending_count = 0
+    kta_pending_count = 0
+    if user["role"] in ("admin", "direktur_binmas"):
+        try:
+            emergency_pending_count = get_db().execute("SELECT COUNT(*) FROM emergency_reports WHERE status = 'pending'").fetchone()[0]
+            kta_pending_count = get_db().execute("SELECT COUNT(*) FROM kta_perpanjangan WHERE status = 'pending'").fetchone()[0]
+        except:
+            emergency_pending_count = 0
+            kta_pending_count = 0
+
+
+    if user["role"] == "admin":
+        items = [
+            (url_for("admin_dashboard"), "Admin"),
+            (url_for("admin_send_notification"), "📤 Kirim Notifikasi"),
+            (url_for("notifications_page"), f"🔔 Notifikasi", unread_notif),
+            (url_for("admin_kta_perpanjangan"), "📋 Pengajuan KTA", kta_pending_count),
+            (url_for("bujp_management"), "Manajemen BUJP"),
+            (url_for("monitor_map"), "Map Monitor"),
+            (url_for("emergency_alert_map"), "🚨 Maps Alert", emergency_pending_count),
+            (url_for("admin_emergency_reports"), "📋 Daftar Laporan Darurat"),
+            (url_for("admin_absensi_sesi"), "📅 Kelola Absensi"),
+            (url_for("admin_absensi_rekap"), "📊 Rekap Absensi"),
+            (url_for("admin_rekening_management"), "💳 Manajemen Rekening"),
+            (url_for("change_password"), "Ganti Password"),
+            (url_for("logout"), "Logout"),
+        ]
+
+
+    elif user["role"] == "direktur_binmas":
+        items = [
+            (url_for("monitor_map"), "Map Satpam"),
+            (url_for("notifications_page"), f"🔔 Notifikasi", unread_notif),
+            (url_for("emergency_alert_map"), "🚨 Maps Alert", emergency_pending_count),
+            (url_for("admin_emergency_reports"), "📋 Daftar Laporan Darurat"),
+            (url_for("direktur_maps_bujp"), "🗺️ Maps Perusahaan"),
+            (url_for("bujp_management"), "Manajemen BUJP"),
+            (url_for("change_password"), "Ganti Password"),
+            (url_for("logout"), "Logout"),
+        ]
+    elif user["role"] == "satpam":
+        items = [
+            (url_for("satpam_page"), "🏠 Beranda"),
+            (url_for("notifications_page"), f"🔔 Notifikasi", unread_notif),
+            (url_for("satpam_profile"), "👤 Profil KTA"),
+            (url_for("change_password"), "🔑 Ganti Password"),
+            (url_for("logout"), "🚪 Logout"),
+        ]
+    else:
+        items = [
+            (url_for("bujp_dashboard"), "Beranda"),
+            (url_for("notifications_page"), f"🔔 Notifikasi", unread_notif),
+            (url_for("change_password"), "Ganti Password"),
+            (url_for("logout"), "Logout"),
+        ]
+    nav_items = []
+    for item in items:
+        if len(item) == 3:
+            href, label, badge_count = item
+            if badge_count and badge_count > 0:
+                # Tampilkan badge notifikasi merah dengan angka
+                nav_items.append(f'''
+                <a href="{href}" class="px-3 py-2 rounded-xl text-sm bg-white/5 hover:bg-cyan-500/20 border border-white/10 transition relative">
+                    {label}
+                    <span class="emergency-badge absolute -top-1 -right-1 bg-red-500 text-white text-xs font-black rounded-full w-5 h-5 flex items-center justify-center animate-pulse">
+                        {badge_count}
+                    </span>
+                </a>
+                ''')
+            else:
+                nav_items.append(f'<a href="{href}" class="px-3 py-2 rounded-xl text-sm bg-white/5 hover:bg-cyan-500/20 border border-white/10 transition">{label}</a>')
+        else:
+            href, label = item
+            nav_items.append(f'<a href="{href}" class="px-3 py-2 rounded-xl text-sm bg-white/5 hover:bg-cyan-500/20 border border-white/10 transition">{label}</a>')
+
+    return "".join(nav_items)
 
 
 init_db()
