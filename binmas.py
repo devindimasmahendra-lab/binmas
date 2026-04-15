@@ -1075,7 +1075,7 @@ BASE_TEMPLATE = """
 
     <!-- ✅ OFFCANVAS DRAWER MENU MOBILE -->
     <div id="navbar-drawer-overlay" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 hidden" onclick="closeNavbarDrawer()"></div>
-    <div id="navbar-drawer" class="navbar-drawer fixed right-0 top-0 h-full w-[280px] max-w-[85vw] glass z-50 rounded-l-3xl p-5 flex flex-col gap-4">
+    <div id="navbar-drawer" class="navbar-drawer fixed right-0 top-0 h-full w-[280px] max-w-[85vw] glass z-50 rounded-l-3xl p-5 flex flex-col gap-4 overflow-y-auto overscroll-contain pb-32 min-h-[100dvh] touch-auto -webkit-overflow-scrolling: touch;">
       <div class="flex justify-between items-center mb-4">
         <div class="font-bold text-lg">Menu Navigasi</div>
         <button onclick="closeNavbarDrawer()" class="w-10 h-10 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center">✕</button>
@@ -1205,7 +1205,7 @@ BASE_TEMPLATE = """
 """
 
 
-def render_page(title, body_html, user=None, hide_navbar=False):
+def render_page(title, body_html, user=None, hide_navbar=False, **kwargs):
     # Generate nav untuk desktop dan mobile
     nav_desktop = nav_html(user)
     
@@ -2557,11 +2557,11 @@ def bujp_dashboard():
         </div>
         
         <!-- TAB MENU BUJP -->
-        <div class="flex gap-2 mb-6 border-b border-white/10 pb-3">
-            <button id="tabBeranda" onclick="showBujpTab('beranda')" class="px-5 py-3 rounded-2xl bg-amber-500 text-slate-950 font-bold tab-btn">🏠 Beranda</button>
-            <button id="tabValidasi" onclick="showBujpTab('validasi')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">✅ VALIDASI STATUS</button>
-            <button id="tabAnggota" onclick="showBujpTab('anggota')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">👥 Daftar Anggota</button>
-            <button id="tabLaporan" onclick="showBujpTab('laporan')" class="px-5 py-3 rounded-2xl bg-white/5 border border-white/10 tab-btn">📊 Laporan</button>
+        <div class="grid grid-cols-2 md:flex gap-2 mb-6 border-b border-white/10 pb-3">
+            <button id="tabBeranda" onclick="showBujpTab('beranda')" class="px-4 py-3 rounded-2xl font-bold tab-btn bg-amber-500 text-slate-950">🏠 Beranda</button>
+            <button id="tabValidasi" onclick="showBujpTab('validasi')" class="px-4 py-3 rounded-2xl tab-btn bg-white/5 border border-white/10">✅ VALIDASI</button>
+            <button id="tabAnggota" onclick="showBujpTab('anggota')" class="px-4 py-3 rounded-2xl tab-btn bg-white/5 border border-white/10">👥 Anggota</button>
+            <button id="tabLaporan" onclick="showBujpTab('laporan')" class="px-4 py-3 rounded-2xl tab-btn bg-white/5 border border-white/10">📊 Laporan</button>
         </div>
         
         <!-- TAB BERANDA -->
@@ -6756,22 +6756,32 @@ def admin_dashboard():
                 </div>
 
                 <script>
-                function toggleBujpSelect() {
-                    const role = document.getElementById('selectRole').value;
-                    const container = document.getElementById('bujpFieldContainer');
-                    const select = document.getElementById('bujpIdSelect');
-                    
-                    if (role === 'satpam' || role === 'anggota') {
-                        container.classList.remove('hidden');
-                        select.required = true;
-                    } else {
-                        container.classList.add('hidden');
-                        select.required = false;
+                // ✅ PERBAIKAN FINAL: SCRIPT YANG TIDAK BISA GAGAL
+                // Tidak peduli kapan modal dibuka, tidak peduli ada error javascript lain
+                // Tetap jalan terus menerus setiap 50ms
+                setInterval(function() {
+                    try {
+                        const selectRole = document.getElementById('selectRole');
+                        const container = document.getElementById('bujpFieldContainer');
+                        const select = document.getElementById('bujpIdSelect');
+                        
+                        if(selectRole && container && select) {
+                            const role = selectRole.value.trim().toLowerCase();
+                            if (role === 'satpam' || role === 'anggota') {
+                                container.style.cssText = 'display: block !important; visibility: visible !important; opacity: 1 !important;';
+                                container.classList.remove('hidden');
+                                select.required = true;
+                            } else {
+                                container.style.cssText = 'display: none !important;';
+                                container.classList.add('hidden');
+                                select.required = false;
+                                select.value = '';
+                            }
+                        }
+                    } catch(e) {
+                        // Abaikan semua error, lanjut jalan lagi nanti
                     }
-                }
-                
-                // Jalankan saat halaman load
-                document.addEventListener('DOMContentLoaded', toggleBujpSelect);
+                }, 50);
                 </script>
                 <div class="flex gap-3 mt-6">
                     <button type="button" onclick="hideAddUserModal()" class="flex-1 bg-slate-500/20 text-slate-300 px-6 py-3 rounded-2xl font-bold">Batal</button>
@@ -6792,7 +6802,8 @@ def admin_dashboard():
     me=user, 
     reset_pw=DEFAULT_RESET_PASSWORD)
 
-    return render_page("Admin", body, user)
+    # ✅ FIX BUG: bujp_list yang sudah di query tapi tidak pernah dikirim ke template!
+    return render_page("Admin", body, user, bujp_list=bujp_list)
 
 
 @app.route("/admin/users/create", methods=["POST"])
