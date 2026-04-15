@@ -9019,43 +9019,42 @@ def admin_emergency_reports():
     emergency_list = [dict(row) for row in emergency_rows]
     
     body = render_template_string("""
-    <div class="mt-6">
-      <div class="flex justify-between items-center mb-6">
+    <div class="mt-4 sm:mt-6 px-2 sm:px-0">
+      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 sm:mb-6 gap-3">
         <div>
-          <h1 class="text-3xl font-black mb-2">🚨 DAFTAR SEMUA LAPORAN DARURAT</h1>
-          <p class="text-slate-400">Semua riwayat laporan darurat dari Satpam seluruhnya</p>
+          <h1 class="text-2xl sm:text-3xl font-black mb-1 sm:mb-2">🚨 DAFTAR SEMUA LAPORAN DARURAT</h1>
+          <p class="text-slate-400 text-sm">Semua riwayat laporan darurat dari Satpam seluruhnya</p>
         </div>
-        <div class="px-4 py-2 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-300 font-bold">
+        <div class="px-4 py-2 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-300 font-bold text-sm">
           Total: {{ emergency_list|length }} Laporan
         </div>
       </div>
       
-      <div class="glass rounded-3xl overflow-hidden">
+      <!-- 🖥️ TAMPILAN DESKTOP (LEBIH DARI 640px) -->
+      <div class="hidden sm:block glass rounded-3xl overflow-hidden">
         <div class="overflow-x-auto">
           <table class="w-full">
             <thead>
               <tr class="bg-white/5 border-b border-white/10">
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Waktu</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Nama Satpam</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">BUJP</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Keterangan</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Lokasi</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Status</th>
-                <th class="text-left px-6 py-4 text-sm font-bold text-slate-300">Aksi</th>
+                <th class="text-left px-4 sm:px-6 py-3 sm:py-4 text-sm font-bold text-slate-300">Waktu</th>
+                <th class="text-left px-4 sm:px-6 py-3 sm:py-4 text-sm font-bold text-slate-300">Nama Satpam</th>
+                <th class="text-left px-4 sm:px-6 py-3 sm:py-4 text-sm font-bold text-slate-300">BUJP</th>
+                <th class="text-left px-4 sm:px-6 py-3 sm:py-4 text-sm font-bold text-slate-300">Keterangan</th>
+                <th class="text-left px-4 sm:px-6 py-3 sm:py-4 text-sm font-bold text-slate-300">Status</th>
+                <th class="text-left px-4 sm:px-6 py-3 sm:py-4 text-sm font-bold text-slate-300">Aksi</th>
               </tr>
             </thead>
           <tbody class="divide-y divide-white/5">
             {% for report in emergency_list %}
               <tr class="hover:bg-white/5 transition" data-report-row="{{ report.id }}">
-                <td class="px-6 py-4 text-sm">{{ report.created_at }}</td>
-                <td class="px-6 py-4">
+                <td class="px-4 sm:px-6 py-3 sm:py-4 text-sm">{{ report.created_at }}</td>
+                <td class="px-4 sm:px-6 py-3 sm:py-4">
                   <div class="font-bold">{{ report.full_name }}</div>
                   <div class="text-xs text-slate-500">@{{ report.username }}</div>
                 </td>
-                <td class="px-6 py-4 text-amber-300 text-sm">{{ report.nama_bujp or 'Umum' }}</td>
-                <td class="px-6 py-4 text-sm">{{ report.keterangan[:50] }}{{ '...' if report.keterangan|length > 50 else '' }}</td>
-                <td class="px-6 py-4 text-cyan-300 text-xs font-mono">{{ '%.6f'|format(report.lat) }}</td>
-                <td class="px-6 py-4">
+                <td class="px-4 sm:px-6 py-3 sm:py-4 text-amber-300 text-sm">{{ report.nama_bujp or 'Umum' }}</td>
+                <td class="px-4 sm:px-6 py-3 sm:py-4 text-sm max-w-xs truncate">{{ report.keterangan[:50] }}{{ '...' if report.keterangan|length > 50 else '' }}</td>
+                <td class="px-4 sm:px-6 py-3 sm:py-4">
                   {% if report.status == 'pending' %}
                   <span class="inline-block px-3 py-1 rounded-full bg-amber-500/20 text-amber-400 text-xs font-bold">⏳ Pending</span>
                   {% elif report.status == 'processed' %}
@@ -9064,14 +9063,14 @@ def admin_emergency_reports():
                   <span class="inline-block px-3 py-1 rounded-full bg-slate-500/20 text-slate-300 text-xs font-bold">❌ Ditutup</span>
                   {% endif %}
                 </td>
-                <td class="px-6 py-4">
+                <td class="px-4 sm:px-6 py-3 sm:py-4">
                   <div class="flex gap-2">
                   {% if report.status == 'pending' %}
-                  <button data-report-process="{{ report.id }}" class="px-3 py-2 rounded-xl bg-emerald-500/20 text-emerald-400 text-xs font-bold">
+                  <button onclick="openEmergencyDetail({{ report.id }})" class="px-3 py-2 rounded-xl bg-emerald-500/20 text-emerald-400 text-xs font-bold">
                     ✅ Proses
                   </button>
                   {% endif %}
-                  <button data-report-view="{{ report.id }}" class="px-3 py-2 rounded-xl bg-cyan-500/20 text-cyan-400 text-xs font-bold">
+                  <button onclick="openEmergencyDetail({{ report.id }})" class="px-3 py-2 rounded-xl bg-cyan-500/20 text-cyan-400 text-xs font-bold">
                     👁️ Detail
                   </button>
                   </div>
@@ -9079,7 +9078,7 @@ def admin_emergency_reports():
               </tr>
             {% else %}
               <tr>
-                <td colspan="7" class="py-12 text-center text-slate-400">
+                <td colspan="6" class="py-12 text-center text-slate-400">
                   <div class="text-4xl mb-3">✅</div>
                   <div>Belum ada laporan darurat yang masuk</div>
                 </td>
@@ -9088,6 +9087,44 @@ def admin_emergency_reports():
             </tbody>
           </table>
         </div>
+      </div>
+      
+      <!-- 📱 TAMPILAN MOBILE (DI BAWAH 640px) - KARTU BUKAN TABEL -->
+      <div class="sm:hidden space-y-3">
+        {% for report in emergency_list %}
+        <div class="glass rounded-2xl p-4 {% if report.status == 'pending' %}border-l-4 border-amber-500{% endif %}">
+            <div class="flex justify-between items-start mb-3">
+                <div>
+                    <div class="font-bold text-lg">{{ report.full_name }}</div>
+                    <div class="text-xs text-slate-400 font-mono">#{{ report.id }} · {{ report.created_at }}</div>
+                </div>
+                {% if report.status == 'pending' %}
+                <span class="px-3 py-1 rounded-full bg-amber-500/20 text-amber-400 text-xs font-bold">⏳ Pending</span>
+                {% elif report.status == 'processed' %}
+                <span class="px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold">✅ Diproses</span>
+                {% else %}
+                <span class="px-3 py-1 rounded-full bg-slate-500/20 text-slate-300 text-xs font-bold">❌ Ditutup</span>
+                {% endif %}
+            </div>
+            
+            {% if report.nama_bujp %}
+            <div class="text-sm text-amber-300 mb-2">🏢 {{ report.nama_bujp }}</div>
+            {% endif %}
+            
+            <div class="text-sm text-slate-300 mb-3 line-clamp-2">
+                📝 {{ report.keterangan or 'Tidak ada keterangan tambahan' }}
+            </div>
+            
+            <button onclick="openEmergencyDetail({{ report.id }})" class="w-full py-3 rounded-xl bg-cyan-500/20 text-cyan-300 font-bold hover:bg-cyan-500/30 transition text-base">
+                🔍 LIHAT DETAIL LAPORAN
+            </button>
+        </div>
+        {% else %}
+        <div class="glass rounded-2xl p-8 text-center">
+            <div class="text-4xl mb-3">✅</div>
+            <div>Belum ada laporan darurat yang masuk</div>
+        </div>
+        {% endfor %}
       </div>
     </div>
     
