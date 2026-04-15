@@ -3138,81 +3138,123 @@ def satpam_page():
     """).fetchall()
     
     body = render_template_string("""
-    <div class="max-w-md mx-auto mt-6 space-y-6">
+    <div class="max-w-6xl mx-auto mt-4 sm:mt-6 px-2 sm:px-4 space-y-4 sm:space-y-6">
     
-      <!-- Profil Header -->
-      <div class="glass rounded-3xl p-6 text-center">
-        <div class="w-24 h-24 mx-auto rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-4xl mb-4">
-          👮
-        </div>
-        <h1 class="text-2xl font-black mb-1">{{ user.full_name }}</h1>
-        <div class="text-sm text-slate-400 mb-2">@{{ user.username }} • Satpam</div>
-        {% if user.no_kta %}
-        <div class="inline-block px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-sm">
-          ✅ KTA Aktif: {{ user.no_kta }}
-        </div>
-        {% else %}
-        <div class="inline-block px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm">
-          ⚠️ Belum isi profil KTA
-        </div>
-        {% endif %}
-      </div>
+      <!-- ✅ RESPONSIVE LAYOUT: 1 kolom di HP, 2 kolom di Desktop -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
       
-      <!-- 🚨 EMERGENCY BUTTON KOTAK MERAH BESAR -->
-      <button onclick="showEmergencyModal()" class="w-full rounded-3xl bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 text-white font-black text-2xl px-6 py-8 transition-all duration-300 transform hover:scale-[1.03] active:scale-[0.97] shadow-lg shadow-red-500/40 border-2 border-red-400">
-        <div class="text-6xl mb-4">🚨</div>
-        <div>TOMBOL DARURAT</div>
-        <div class="text-sm opacity-80 mt-2">Tekan ini jika dalam kondisi bahaya / darurat</div>
-      </button>
-      
-      <!-- Menu Grid -->
-      <div class="grid grid-cols-2 gap-4">
-      
-        <a href="{{ url_for('satpam_absen') }}" class="glass rounded-3xl p-6 text-center hover:bg-cyan-500/10 hover:border-cyan-500/20 transition">
-          <div class="text-4xl mb-3">📅</div>
-          <div class="font-bold text-lg">ABSENSI</div>
-          <div class="text-xs text-slate-400 mt-1">Absen Masuk & Pulang</div>
-        </a>
+        <!-- KIRI: Profil + Tombol Emergency (di hp full width, di desktop 5 kolom) -->
+        <div class="lg:col-span-5 space-y-4 sm:space-y-6">
         
-        <a href="{{ url_for('satpam_profile') }}" class="glass rounded-3xl p-6 text-center hover:bg-cyan-500/10 hover:border-cyan-500/20 transition">
-          <div class="text-4xl mb-3">🪪</div>
-          <div class="font-bold text-lg">Profil KTA</div>
-          <div class="text-xs text-slate-400 mt-1">Edit & Lihat Kartu</div>
-        </a>
+          <!-- Profil Header -->
+          <div class="glass rounded-3xl p-4 sm:p-6 text-center">
+            <div class="w-16 h-16 sm:w-24 sm:h-24 mx-auto rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-2xl sm:text-4xl mb-3 sm:mb-4">
+              👮
+            </div>
+            <h1 class="text-xl sm:text-2xl font-black mb-1">{{ user.full_name }}</h1>
+            <div class="text-xs sm:text-sm text-slate-400 mb-2">@{{ user.username }} • Satpam</div>
+            {% if user.no_kta %}
+            <div class="inline-block px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs sm:text-sm">
+              ✅ KTA Aktif: {{ user.no_kta }}
+            </div>
+            {% else %}
+            <div class="inline-block px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs sm:text-sm">
+              ⚠️ Belum isi profil KTA
+            </div>
+            {% endif %}
+            
+            <div class="mt-4 flex items-center justify-center gap-4 text-xs text-slate-400">
+              <div id="liveClock">--:--:-- WIB</div>
+              <div id="connectionStatus" class="flex items-center gap-1">
+                <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                <span>Connecting...</span>
+              </div>
+            </div>
+          </div>
+          
+          <!-- 🚨 EMERGENCY BUTTON RESPONSIVE -->
+          <button onclick="showEmergencyModal()" class="w-full rounded-3xl bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 text-white font-black text-lg sm:text-2xl px-4 sm:px-6 py-5 sm:py-8 transition-all duration-300 transform hover:scale-[1.02] active:scale-[0.97] shadow-lg shadow-red-500/40 border-2 border-red-400">
+            <div class="text-4xl sm:text-6xl mb-2 sm:mb-4">🚨</div>
+            <div>TOMBOL DARURAT</div>
+            <div class="text-xs sm:text-sm opacity-80 mt-1 sm:mt-2">Tekan ini jika dalam kondisi bahaya / darurat</div>
+          </button>
+          
+        </div>
         
-        <a href="{{ url_for('satpam_perpanjang_kta') }}" class="glass rounded-3xl p-6 text-center hover:bg-amber-500/10 hover:border-amber-500/20 transition">
-          <div class="text-4xl mb-3">🔄</div>
-          <div class="font-bold text-lg">Perpanjang KTA</div>
-          <div class="text-xs text-slate-400 mt-1">Ajukan Perpanjangan</div>
-        </a>
+        <!-- KANAN: Menu Grid (di hp full width, di desktop 7 kolom) -->
+        <div class="lg:col-span-7">
+          <!-- Menu Grid Responsive: 2 kolom hp, 3 kolom tablet, 4 kolom desktop besar -->
+          <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-2 gap-3 sm:gap-4">
+          
+            <a href="{{ url_for('satpam_absen') }}" class="glass rounded-2xl sm:rounded-3xl p-4 sm:p-6 text-center hover:bg-cyan-500/10 hover:border-cyan-500/20 transition">
+              <div class="text-3xl sm:text-4xl mb-2 sm:mb-3">📅</div>
+              <div class="font-bold text-base sm:text-lg">ABSENSI</div>
+              <div class="text-xs text-slate-400 mt-1">Absen Masuk & Pulang</div>
+            </a>
+            
+            <a href="{{ url_for('satpam_profile') }}" class="glass rounded-2xl sm:rounded-3xl p-4 sm:p-6 text-center hover:bg-cyan-500/10 hover:border-cyan-500/20 transition">
+              <div class="text-3xl sm:text-4xl mb-2 sm:mb-3">🪪</div>
+              <div class="font-bold text-base sm:text-lg">Profil KTA</div>
+              <div class="text-xs text-slate-400 mt-1">Edit & Lihat Kartu</div>
+            </a>
+            
+            <a href="{{ url_for('satpam_perpanjang_kta') }}" class="glass rounded-2xl sm:rounded-3xl p-4 sm:p-6 text-center hover:bg-amber-500/10 hover:border-amber-500/20 transition">
+              <div class="text-3xl sm:text-4xl mb-2 sm:mb-3">🔄</div>
+              <div class="font-bold text-base sm:text-lg">Perpanjang KTA</div>
+              <div class="text-xs text-slate-400 mt-1">Ajukan Perpanjangan</div>
+            </a>
 
-        <a href="{{ url_for('change_password') }}" class="glass rounded-3xl p-6 text-center hover:bg-cyan-500/10 hover:border-cyan-500/20 transition">
-          <div class="text-4xl mb-3">🔐</div>
-          <div class="font-bold text-lg">Ganti Password</div>
-          <div class="text-xs text-slate-400 mt-1">Keamanan Akun</div>
-        </a>
+            <a href="{{ url_for('change_password') }}" class="glass rounded-2xl sm:rounded-3xl p-4 sm:p-6 text-center hover:bg-cyan-500/10 hover:border-cyan-500/20 transition">
+              <div class="text-3xl sm:text-4xl mb-2 sm:mb-3">🔐</div>
+              <div class="font-bold text-base sm:text-lg">Ganti Password</div>
+              <div class="text-xs text-slate-400 mt-1">Keamanan Akun</div>
+            </a>
 
-        <a href="{{ url_for('satpam_emergency_history') }}" class="glass rounded-3xl p-6 text-center hover:bg-red-500/10 hover:border-red-500/20 transition">
-          <div class="text-4xl mb-3">📋</div>
-          <div class="font-bold text-lg">Riwayat Laporan Darurat</div>
-          <div class="text-xs text-slate-400 mt-1">Lihat semua history laporan darurat yang pernah dikirim</div>
-        </a>
-        
-        <a href="{{ url_for('logout') }}" class="glass rounded-3xl p-6 text-center hover:bg-red-500/10 hover:border-red-500/20 transition">
-          <div class="text-4xl mb-3">🚪</div>
-          <div class="font-bold text-lg">Logout</div>
-          <div class="text-xs text-slate-400 mt-1">Keluar Sistem</div>
-        </a>
+            <a href="{{ url_for('satpam_emergency_history') }}" class="glass rounded-2xl sm:rounded-3xl p-4 sm:p-6 text-center hover:bg-red-500/10 hover:border-red-500/20 transition">
+              <div class="text-3xl sm:text-4xl mb-2 sm:mb-3">📋</div>
+              <div class="font-bold text-base sm:text-lg">Riwayat Laporan</div>
+              <div class="text-xs text-slate-400 mt-1">History laporan darurat</div>
+            </a>
+            
+            <a href="{{ url_for('logout') }}" class="glass rounded-2xl sm:rounded-3xl p-4 sm:p-6 text-center hover:bg-red-500/10 hover:border-red-500/20 transition">
+              <div class="text-3xl sm:text-4xl mb-2 sm:mb-3">🚪</div>
+              <div class="font-bold text-base sm:text-lg">Logout</div>
+              <div class="text-xs text-slate-400 mt-1">Keluar Sistem</div>
+            </a>
+            
+          </div>
+        </div>
         
       </div>
       
       <!-- Info Footer -->
-      <div class="glass rounded-3xl p-4 text-center text-sm text-slate-400">
+      <div class="glass rounded-3xl p-3 sm:p-4 text-center text-xs sm:text-sm text-slate-400 mt-4">
         <div>BINMAS Guard Tracker</div>
-        <div class="text-xs mt-1">Versi 2.0 • Live WebSocket</div>
+        <div class="text-xs mt-1">Versi 2.1 • Full Responsive • Live WebSocket</div>
       </div>
       
     </div>
+    
+    <script>
+    // Jam realtime WIB
+    function updateClock() {
+      const now = new Date();
+      const wib = new Date(now.getTime() + 7 * 3600 * 1000);
+      const timeStr = wib.toISOString().substr(11, 8) + ' WIB';
+      document.getElementById('liveClock').textContent = timeStr;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+    
+    // Status koneksi
+    setInterval(() => {
+      fetch('/').then(() => {
+        document.getElementById('connectionStatus').innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-500"></span> <span>Online</span>';
+      }).catch(() => {
+        document.getElementById('connectionStatus').innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> <span>Offline</span>';
+      });
+    }, 5000);
+    </script>
     
     <!-- 🚨 MODAL FORM LAPORAN DARURAT -->
     <div id="emergencyModal" class="fixed inset-0 bg-black/90 z-50 hidden flex items-center justify-center p-4">
