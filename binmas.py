@@ -2653,10 +2653,10 @@ def bujp_dashboard():
                     <div class="text-sm text-slate-400">Laporan statistik dan rekap data keanggotaan Binmas</div>
                 </a>
                 
-                <a href="#" class="glass rounded-3xl p-6 text-center hover:bg-amber-500/10 hover:border-amber-500/20 transition">
-                    <div class="text-5xl mb-4">🔍</div>
-                    <div class="text-xl font-black text-amber-300 mb-2">Cek Data Anggota</div>
-                    <div class="text-sm text-slate-400">Pencarian dan verifikasi data anggota by NIK / No KTA / Nama</div>
+                <a href="{{ url_for('direktur_maps_bujp') }}" class="glass rounded-3xl p-6 text-center hover:bg-amber-500/10 hover:border-amber-500/20 transition">
+                    <div class="text-5xl mb-4">🗺️</div>
+                    <div class="text-xl font-black text-amber-300 mb-2">Lihat Maps</div>
+                    <div class="text-sm text-slate-400">Melihat lokasi semua Satpam BUJP pada peta secara realtime</div>
                 </a>
                 
             </div>
@@ -2734,7 +2734,6 @@ def bujp_dashboard():
                                 <th class="py-3 px-2">Nama</th>
                                 <th class="py-3 px-2">No KTA</th>
                                 <th class="py-3 px-2">Role</th>
-                                <th class="py-3 px-2">Status</th>
                                 <th class="py-3 px-2">Tanggal Daftar</th>
                                 <th class="py-3 px-2">Aksi</th>
                             </tr>
@@ -2746,13 +2745,6 @@ def bujp_dashboard():
                                 <td class="py-3 px-2 font-bold">{{ anggota.full_name }}</td>
                                 <td class="py-3 px-2 text-cyan-300">{{ anggota.no_kta or '-' }}</td>
                                 <td class="py-3 px-2"><span class="px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-xs">{{ anggota.role }}</span></td>
-                                <td class="py-3 px-2">
-                                    {% if anggota.is_active %}
-                                    <span class="text-emerald-400">✅ Aktif</span>
-                                    {% else %}
-                                    <span class="text-slate-400">⚪ Nonaktif</span>
-                                    {% endif %}
-                                </td>
                                 <td class="py-3 px-2 text-slate-400">{{ anggota.created_at }}</td>
                                 <td class="py-3 px-2">
                                     <button class="px-3 py-1 rounded-xl bg-amber-500 text-slate-950 text-xs font-bold">Detail</button>
@@ -6331,8 +6323,14 @@ def admin_dashboard():
     
     # Ambil semua data (tanpa pagination untuk client side)
     users_all = db.execute("""
-        SELECT id, username, full_name, role, is_active, no_kta, no_hp, created_at, updated_at 
-        FROM users ORDER BY id DESC
+        SELECT 
+            u.id, u.username, u.full_name, u.role, u.is_active, u.no_kta, u.no_hp, 
+            u.created_at, u.updated_at, u.nik, u.alamat, u.jabatan,
+            u.tanggal_lahir, u.tanggal_masuk, u.bujp_verified, u.profile_updated_at,
+            b.nama_bujp
+        FROM users u
+        LEFT JOIN bujp b ON u.bujp_id = b.id
+        ORDER BY u.id DESC
     """).fetchall()
     
     geofences = db.execute("SELECT * FROM geofences ORDER BY id DESC").fetchall()
@@ -6393,57 +6391,59 @@ def admin_dashboard():
         <div class="overflow-auto max-h-[70vh]">
           <table class="w-full text-xs">
             <thead class="sticky top-0 bg-[#0f172a] z-10">
-              <tr class="border-b border-white/10 text-slate-400">
-                <th class="py-3 px-2 text-left">ID</th>
-                <th class="py-3 px-2 text-left">Nama / Username</th>
-                <th class="py-3 px-2 text-center">Role</th>
-                <th class="py-3 px-2 text-center">KTA</th>
+              <tr class="border-b border-white/10 text-slate-400 text-xs">
+                <th class="py-3 px-2 text-center">ID</th>
+                <th class="py-3 px-2 text-left">Nama Lengkap</th>
+                <th class="py-3 px-2 text-left">Username</th>
+                <th class="py-3 px-2 text-center">No KTA</th>
+                <th class="py-3 px-2 text-center">NIK</th>
                 <th class="py-3 px-2 text-center">No HP</th>
-                <th class="py-3 px-2 text-center">Status</th>
+                <th class="py-3 px-2 text-center">Jabatan</th>
+                <th class="py-3 px-2 text-center">BUJP</th>
+                <th class="py-3 px-2 text-center">Tgl Lahir</th>
+                <th class="py-3 px-2 text-center">Tgl Masuk</th>
+                <th class="py-3 px-2 text-center">Verifikasi</th>
                 <th class="py-3 px-2 text-center">Update</th>
-                <th class="py-3 px-2 text-center">Aksi</th>
               </tr>
             </thead>
             <tbody id="usersTableBody">
             {% for u in users_all %}
-              <tr class="border-b border-white/5 hover:bg-white/5 transition user-row" data-name="{{ u.full_name.lower() }} {{ u.username.lower() }} {{ u.no_kta.lower() }}">
-                <td class="py-2 px-2 text-slate-500 font-mono">#{{ u.id }}</td>
+              <tr class="border-b border-white/5 hover:bg-white/5 transition user-row" data-name="{{ u.full_name.lower() }} {{ u.username.lower() }} {{ u.no_kta.lower() }} {{ u.no_hp.lower() }}">
+                <td class="py-2 px-2 text-center text-slate-500 font-mono text-xs">#{{ u.id }}</td>
                 <td class="py-2 px-2">
-                  <div class="font-bold">{{ u.full_name }}</div>
-                  <div class="text-[10px] text-slate-500">@{{ u.username }}</div>
+                  <div class="font-bold text-sm">{{ u.full_name }}</div>
                 </td>
-                <td class="py-2 px-2 text-center">
-                  <span class="inline-block px-2 py-1 rounded-lg bg-white/5 border border-white/10">{{ u.role }}</span>
-                </td>
+                <td class="py-2 px-2 text-slate-400 text-xs">@{{ u.username }}</td>
                 <td class="py-2 px-2 text-center">
                   {% if u.no_kta %}
-                    <span class="text-emerald-400 font-mono">{{ u.no_kta }}</span>
+                    <span class="text-emerald-400 font-mono text-xs">{{ u.no_kta }}</span>
                   {% else %}
-                    <span class="text-slate-500">-</span>
+                    <span class="text-slate-600 text-xs">-</span>
                   {% endif %}
                 </td>
-                <td class="py-2 px-2 text-center text-slate-300">{{ u.no_hp or '-' }}</td>
+                <td class="py-2 px-2 text-center text-slate-300 text-xs">{{ u.nik or '-' }}</td>
+                <td class="py-2 px-2 text-center text-slate-300 text-xs">{{ u.no_hp or '-' }}</td>
+                <td class="py-2 px-2 text-center text-slate-300 text-xs">{{ u.jabatan or 'Satpam' }}</td>
                 <td class="py-2 px-2 text-center">
-                  {% if u.is_active %}
-                    <span class="text-emerald-400">✅</span>
+                  {% if u.bujp_id %}
+                    <span class="text-amber-400 text-xs font-bold">{{ u.bujp_nama or 'BUJP' }}</span>
                   {% else %}
-                    <span class="text-slate-500">⚪</span>
+                    <span class="text-slate-500 text-xs">Umum</span>
                   {% endif %}
                 </td>
-                <td class="py-2 px-2 text-center text-slate-500 text-[10px]">{{ u.updated_at.split(' ')[0] }}</td>
+                <td class="py-2 px-2 text-center text-slate-300 text-xs">{{ u.tanggal_lahir.split(' ')[0] if u.tanggal_lahir else '-' }}</td>
+                <td class="py-2 px-2 text-center text-slate-300 text-xs">{{ u.tanggal_masuk.split(' ')[0] if u.tanggal_masuk else '-' }}</td>
                 <td class="py-2 px-2 text-center">
-                <div class="flex items-center justify-center gap-1">
-                    <button onclick="resetPassword({{ u.id }})" title="Reset Password" class="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30">🔑</button>
-                    <button onclick="resetLocations({{ u.id }})" title="Reset Lokasi & Absensi" class="w-7 h-7 rounded-lg bg-orange-500/20 text-orange-400 hover:bg-orange-500/30">🔄</button>
-                    <button onclick="editUser({{ u.id }}, '{{ u.full_name.replace("'", "\\'") }}', '{{ u.role }}')" title="Edit User" class="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30">✏️</button>
-                    {% if u.id != me.id %}
-                    <button onclick="deleteUser({{ u.id }})" title="Hapus User" class="w-7 h-7 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30">🗑️</button>
-                    {% endif %}
-                  </div>
+                  {% if u.bujp_verified == 1 %}
+                    <span class="text-emerald-400" title="Sudah diverifikasi BUJP">✅</span>
+                  {% else %}
+                    <span class="text-amber-400" title="Belum diverifikasi BUJP">⏳</span>
+                  {% endif %}
                 </td>
+                <td class="py-2 px-2 text-center text-slate-500 text-[9px]">{{ u.updated_at.split(' ')[0] }}</td>
               </tr>
             {% else %}
-              <tr><td colspan="8" class="py-8 text-center text-slate-400">Belum ada user terdaftar</td></tr>
+              <tr><td colspan="7" class="py-8 text-center text-slate-400">Belum ada user terdaftar</td></tr>
             {% endfor %}
             </tbody>
           </table>
@@ -7798,7 +7798,7 @@ def ws_monitor(ws):
 @app.route("/direktur/maps")
 @app.route("/admin/maps")
 @login_required
-@roles_required("direktur_binmas", "admin")
+@roles_required("direktur_binmas", "admin", "anggota")
 def direktur_maps_bujp():
     db = get_db()
     bujp_list = db.execute("""
@@ -9803,7 +9803,8 @@ if __name__ == '__main__':
     app.run(
         host='0.0.0.0',
         port=int(os.environ.get('PORT', 5010)),
-        debug=True,
-        use_reloader=True,
-        reloader_type='stat'
+        debug=False,
+        threaded=True,
+        processes=1,
+        use_reloader=False
     )
