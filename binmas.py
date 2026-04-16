@@ -687,6 +687,17 @@ def init_db():
     except Exception:
         pass
 
+    # ✅ [OPTIMASI] BUAT INDEX UNTUK PERFORMA
+    db.execute("CREATE INDEX IF NOT EXISTS idx_locations_user_id ON locations(user_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_locations_created_at ON locations(created_at)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_absensi_user_id ON absensi(user_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_absensi_tanggal ON absensi(tanggal)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_emergency_reports_status ON emergency_reports(status)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_kta_perpanjangan_status ON kta_perpanjangan(status)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_users_bujp_id ON users(bujp_id)")
+    db.commit()
+
     db.commit()
     db.close()
 
@@ -722,20 +733,23 @@ def roles_required(*roles):
 
 
 def log_action(action, target_type=None, target_id=None, detail=None):
-    db = get_db()
-    db.execute(
-        "INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, detail, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (
-            session.get("user_id"),
-            action,
-            target_type,
-            str(target_id) if target_id is not None else None,
-            detail,
-            request.headers.get("X-Forwarded-For", request.remote_addr),
-            now_str(),
-        ),
-    )
-    db.commit()
+    try:
+        db = get_db()
+        db.execute(
+            "INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, detail, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                session.get("user_id"),
+                action,
+                target_type,
+                str(target_id) if target_id is not None else None,
+                detail,
+                request.headers.get("X-Forwarded-For", request.remote_addr),
+                now_str(),
+            ),
+        )
+        db.commit()
+    except Exception as e:
+        logger.error(f"Gagal simpan audit log: {str(e)}", exc_info=True)
 
 
 def redirect_by_role(role):
