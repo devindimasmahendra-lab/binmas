@@ -766,7 +766,6 @@ def nav_html(user):
     if user["role"] == "admin":
         items = [
             (url_for("admin_dashboard"), "Admin"),
-            (url_for("admin_kta_perpanjangan"), "📋 Pengajuan KTA", kta_pending_count),
             (url_for("bujp_management"), "Manajemen BUJP"),
             (url_for("monitor_map"), "Map Monitor"),
             (url_for("emergency_alert_map"), "🚨 Maps Alert", emergency_pending_count),
@@ -782,7 +781,6 @@ def nav_html(user):
     elif user["role"] == "direktur_binmas":
         items = [
             (url_for("monitor_map"), "Map Satpam"),
-            (url_for("emergency_alert_map"), "🚨 Maps Alert", emergency_pending_count),
             (url_for("admin_emergency_reports"), "📋 Daftar Laporan Darurat"),
             (url_for("direktur_maps_bujp"), "🗺️ Maps Perusahaan"),
             (url_for("bujp_management"), "Manajemen BUJP"),
@@ -1062,6 +1060,13 @@ BASE_TEMPLATE = """
                class="home-button px-4 py-2 rounded-2xl bg-gradient-to-r from-cyan-500/20 to-purple-500/20 border border-cyan-400/30 hover:border-cyan-400/50 transition flex items-center gap-2 font-bold">
               🏠 Beranda
             </a>
+
+            <!-- ✅ NOTIFIKASI (SELALU TAMPIL SEMUA UKURAN LAYAR) -->
+            <a href="{{ url_for('notifications_page') }}" 
+               class="relative w-12 h-12 rounded-2xl bg-gradient-to-r from-cyan-500/20 to-purple-500/20 border border-cyan-400/30 hover:border-cyan-400/50 transition flex items-center justify-center text-xl">
+              🔔
+              <span id="notifBadgeCount" class="emergency-badge absolute -top-1 -right-1 bg-red-500 text-white text-xs font-black rounded-full w-5 h-5 flex items-center justify-center animate-pulse hidden">0</span>
+            </a>
           {% endif %}
           <div class="hidden sm:block">
             <div class="app-title text-lg font-black tracking-wide">{{ app_name }}</div>
@@ -1215,6 +1220,24 @@ BASE_TEMPLATE = """
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('{{ url_for('sw') }}').catch(() => {}));
     }
+    
+    // ✅ UPDATE BADGE NOTIFIKASI OTOMATIS (SEMUA HALAMAN)
+    async function updateBadgeCount() {
+      try {
+        const res = await fetch('/api/notifications/unread-count');
+        const data = await res.json();
+        const badge = document.getElementById('notifBadgeCount');
+        if (badge) {
+          badge.textContent = data.count;
+          badge.style.display = data.count > 0 ? 'flex' : 'none';
+        }
+      } catch (e) {}
+    }
+    
+    window.addEventListener('load', () => {
+      updateBadgeCount();
+      setInterval(updateBadgeCount, 3000);
+    });
   </script>
 </body>
 </html>
@@ -5692,7 +5715,48 @@ def emergency_alert_map():
         try {
             const msg = JSON.parse(event.data);
             if (msg.type === 'emergency_alert') {
-                alert('🚨 ADA LAPORAN DARURAT BARU MASUK!');
+                // ✅ FIX NOTIFIKASI OTOMATIS: Gunakan Browser Native Notification
+                if (Notification.permission === "granted") {
+                    // Notifikasi native bisa muncul meskipun di background / lockscreen
+                    new Notification("🚨 LAPORAN DARURAT BARU!", {
+                        body: "Ada laporan darurat baru masuk dari Satpam. Segera cek dashboard!",
+                        icon: "https://cdn-icons-png.flaticon.com/512/1828/1828665.png",
+                        vibrate: [200, 100, 200, 100, 200],
+                        tag: "emergency-alert",
+                        renotify: true
+                    });
+                } else if (Notification.permission !== "denied") {
+                    // Minta izin notifikasi jika belum diberikan
+                    Notification.requestPermission().then(permission => {
+                        if (permission === "granted") {
+                            new Notification("🚨 LAPORAN DARURAT BARU!", {
+                                body: "Ada laporan darurat baru masuk dari Satpam!",
+                                vibrate: [200, 100, 200]
+                            });
+                        } else {
+                            // Fallback ke alert HANYA jika user sudah klik di halaman
+                            if (document.hasFocus()) {
+                                alert('🚨 ADA LAPORAN DARURAT BARU MASUK!');
+                            } else {
+                                // Jika user tidak di tab ini, tampilkan title blink
+                                let originalTitle = document.title;
+                                let blinkInterval = setInterval(() => {
+                                    document.title = document.title === originalTitle ? "🚨 DARURAT! KLIK DISINI" : originalTitle;
+                                }, 1000);
+                                // Berhenti blink ketika user kembali ke tab
+                                window.addEventListener('focus', () => {
+                                    clearInterval(blinkInterval);
+                                    document.title = originalTitle;
+                                }, { once: true });
+                            }
+                        }
+                    });
+                } else {
+                    // Jika user menolak notifikasi, fallback ke alert ketika fokus
+                    if (document.hasFocus()) {
+                        alert('🚨 ADA LAPORAN DARURAT BARU MASUK!');
+                    }
+                }
                 
                 // Buat marker emergency baru
                 createEmergencyMarker(msg.report_id, msg.lat, msg.lng, msg);
@@ -6099,8 +6163,48 @@ def monitor_map():
               geofenceLayer.clearLayers();
               (msg.payload || []).forEach(g => geofenceLayer.addData(g));
             } else if (msg.type === 'emergency_alert') {
-              // 🚨 ADA LAPORAN DARURAT BARU MASUK!
-              alert('🚨 ADA LAPORAN DARURAT DARI SATPAM: ' + msg.satpam_nama);
+                // ✅ FIX NOTIFIKASI OTOMATIS: Gunakan Browser Native Notification
+                if (Notification.permission === "granted") {
+                    // Notifikasi native bisa muncul meskipun di background / lockscreen
+                    new Notification("🚨 LAPORAN DARURAT DARI SATPAM!", {
+                        body: msg.satpam_nama + ": " + (msg.keterangan || 'Segera cek dashboard!'),
+                        icon: "https://cdn-icons-png.flaticon.com/512/1828/1828665.png",
+                        vibrate: [200, 100, 200, 100, 200],
+                        tag: "emergency-alert",
+                        renotify: true
+                    });
+                } else if (Notification.permission !== "denied") {
+                    // Minta izin notifikasi jika belum diberikan
+                    Notification.requestPermission().then(permission => {
+                        if (permission === "granted") {
+                            new Notification("🚨 LAPORAN DARURAT DARI SATPAM!", {
+                                body: msg.satpam_nama,
+                                vibrate: [200, 100, 200]
+                            });
+                        } else {
+                            // Fallback ke alert HANYA jika user sudah klik di halaman
+                            if (document.hasFocus()) {
+                                alert('🚨 ADA LAPORAN DARURAT DARI SATPAM: ' + msg.satpam_nama);
+                            } else {
+                                // Jika user tidak di tab ini, tampilkan title blink
+                                let originalTitle = document.title;
+                                let blinkInterval = setInterval(() => {
+                                    document.title = document.title === originalTitle ? "🚨 DARURAT! KLIK DISINI" : originalTitle;
+                                }, 1000);
+                                // Berhenti blink ketika user kembali ke tab
+                                window.addEventListener('focus', () => {
+                                    clearInterval(blinkInterval);
+                                    document.title = originalTitle;
+                                }, { once: true });
+                            }
+                        }
+                    });
+                } else {
+                    // Jika user menolak notifikasi, fallback ke alert ketika fokus
+                    if (document.hasFocus()) {
+                        alert('🚨 ADA LAPORAN DARURAT DARI SATPAM: ' + msg.satpam_nama);
+                    }
+                }
               
               const emergencyData = msg;
               const pos = [emergencyData.lat, emergencyData.lng];
@@ -9440,22 +9544,8 @@ def notifications_page():
       updateBadgeCount();
     }
     
-    async function updateBadgeCount() {
-      try {
-        const res = await fetch('/api/notifications/unread-count');
-        const data = await res.json();
-        const badge = document.getElementById('notifBadgeCount');
-        if (badge) {
-          badge.textContent = data.count;
-          badge.style.display = data.count > 0 ? 'flex' : 'none';
-        }
-      } catch (e) {}
-    }
-    
     window.addEventListener('load', () => {
       loadNotifications();
-      updateBadgeCount();
-      setInterval(updateBadgeCount, 30000);
     });
     </script>
     """, user=user)
@@ -9625,7 +9715,7 @@ def nav_html(user):
         items = [
             (url_for("admin_dashboard"), "Admin"),
             (url_for("admin_send_notification"), "📤 Kirim Notifikasi"),
-            (url_for("notifications_page"), f"🔔 Notifikasi", unread_notif),
+            
             (url_for("admin_kta_perpanjangan"), "📋 Pengajuan KTA", kta_pending_count),
             (url_for("bujp_management"), "Manajemen BUJP"),
             (url_for("monitor_map"), "Map Monitor"),
@@ -9642,7 +9732,7 @@ def nav_html(user):
     elif user["role"] == "direktur_binmas":
         items = [
             (url_for("monitor_map"), "Map Satpam"),
-            (url_for("notifications_page"), f"🔔 Notifikasi", unread_notif),
+            
             (url_for("emergency_alert_map"), "🚨 Maps Alert", emergency_pending_count),
             (url_for("admin_emergency_reports"), "📋 Daftar Laporan Darurat"),
             (url_for("direktur_maps_bujp"), "🗺️ Maps Perusahaan"),
@@ -9653,7 +9743,7 @@ def nav_html(user):
     elif user["role"] == "satpam":
         items = [
             (url_for("satpam_page"), "🏠 Beranda"),
-            (url_for("notifications_page"), f"🔔 Notifikasi", unread_notif),
+            
             (url_for("satpam_profile"), "👤 Profil KTA"),
             (url_for("change_password"), "🔑 Ganti Password"),
             (url_for("logout"), "🚪 Logout"),
@@ -9661,7 +9751,7 @@ def nav_html(user):
     else:
         items = [
             (url_for("bujp_dashboard"), "Beranda"),
-            (url_for("notifications_page"), f"🔔 Notifikasi", unread_notif),
+            
             (url_for("change_password"), "Ganti Password"),
             (url_for("logout"), "Logout"),
         ]
