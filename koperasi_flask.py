@@ -838,55 +838,6 @@ def notify_member(member_id, title, message):
         add_notification(user['id'], title, message)
 
 # =========================
-# Notifications Page for Member
-# =========================
-@app.route('/member/notifications')
-@login_required
-def member_notifications():
-    user = current_user()
-    notifs = q_all('SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 100', [user['id']])
-    unread_count = q_one('SELECT COUNT(*) as n FROM notifications WHERE user_id = ? AND is_read = 0', [user['id']])['n'] or 0
-    if request.args.get('mark_read'):
-        exec_sql('UPDATE notifications SET is_read = 1 WHERE user_id = ?', [user['id']])
-        flash('Semua notifikasi ditandai sudah dibaca.', 'success')
-        return redirect(url_for('member_notifications'))
-    body = render_template_string('''
-    <div class="card">
-        <div class="kartu">
-            <h2>🔔 Notifikasi Saya</h2>
-            {% if unread_count > 0 %}
-            <a href="?mark_read=1" class="btn btn-sm">✅ Tandai Semua Dibaca</a>
-            {% endif %}
-        </div>
-        <div class="muted small">{{ unread_count }} belum dibaca dari {{ notifs|length }} total</div>
-        <hr>
-        {% for n in notifs %}
-        <div style="padding:14px;border-bottom:1px solid var(--border);{% if not n.is_read %}background:var(--primary-light);border-left:3px solid var(--primary);{% endif %}border-radius:8px;margin-bottom:8px;">
-            <div style="display:flex;justify-content:space-between;gap:8px;">
-                <div>
-                    <strong style="font-size:14px;">{{ n.title }}</strong>
-                    <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">{{ n.message }}</div>
-                </div>
-                <div class="muted small" style="white-space:nowrap;padding-top:2px;">{{ n.created_at[:16] }}</div>
-            </div>
-            {% if not n.is_read %}
-            <div style="margin-top:6px;">
-                <span class="badge badge-info" style="font-size:10px;">Baru</span>
-            </div>
-            {% endif %}
-        </div>
-        {% else %}
-        <div class="muted text-center" style="padding:40px 0;">
-            <div style="font-size:48px;margin-bottom:16px;">🔔</div>
-            <div>Tidak ada notifikasi</div>
-            <div class="small muted">Notifikasi akan muncul saat ada aktivitas terkait akun Anda.</div>
-        </div>
-        {% endfor %}
-    </div>
-    ''', notifs=notifs, unread_count=unread_count)
-    return render_page('Notifikasi', body)
-
-# =========================
 # Helper: Hitung Denda
 # =========================
 def calculate_penalty(due_date_str, payment_date_str, amount, penalty_rate=None):
